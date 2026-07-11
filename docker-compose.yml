@@ -1,0 +1,26 @@
+services:
+  oracle_postgres:
+    image: postgres:16
+    container_name: oracle_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: oracle_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - oracle_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d oracle_db" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - oracle_network
+
+volumes:
+  oracle_postgres_data:
+
+networks:
+  oracle_network:
