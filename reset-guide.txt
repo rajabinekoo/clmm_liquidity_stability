@@ -1,0 +1,14 @@
+DELETE FROM lp_actions WHERE block_number >= 16675015;
+DELETE FROM pool_snapshots WHERE block_number >= 16675015;
+UPDATE indexer_checkpoints
+SET
+    last_completed_block = (
+        SELECT MAX(block_number)
+        FROM pool_snapshots
+        WHERE pool_address =
+              '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640'
+    ),
+    updated_at = NOW()
+WHERE pool_address =
+      '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640'
+RETURNING last_completed_block;

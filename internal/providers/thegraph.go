@@ -268,22 +268,18 @@ func (c *Client) PoolMetadata(
 	ctx context.Context,
 	poolAddress string,
 ) (domain.Pool, error) {
-	fmt.Println(1)
 	type responseData struct {
 		Pool *rawPool `json:"pool"`
 	}
-	fmt.Println(2)
 
 	data, err := execute[responseData](
 		ctx,
 		c,
 		utils.GeneratePoolMetadataQuery(poolAddress),
 	)
-	fmt.Println(3)
 	if err != nil {
 		return domain.Pool{}, err
 	}
-	fmt.Println(4)
 
 	if data.Pool == nil {
 		return domain.Pool{}, fmt.Errorf(
@@ -296,11 +292,9 @@ func (c *Client) PoolMetadata(
 		data.Pool.FeeTier,
 		"pool fee tier",
 	)
-	fmt.Println(5)
 	if err != nil {
 		return domain.Pool{}, err
 	}
-	fmt.Println(6)
 
 	tickSpacing, err := domain.TickSpacingForFeeTier(feeTier)
 	if err != nil {
