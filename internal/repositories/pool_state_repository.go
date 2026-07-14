@@ -242,3 +242,73 @@ func parseBigInt(
 
 	return result, nil
 }
+
+func (r *PoolStateRepository) LoadActivePositionsAt(
+	ctx context.Context,
+	poolAddress string,
+	blockNumber uint64,
+	currentTick int,
+	limit int,
+) ([]domain.LiquidityPosition, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("load active positions: limit must be positive")
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(NULLIF(owner, ''), 'unknown') AS owner,
+			tick_lower,
+			tick_upper,
+			SUM(liquidity_delta)::text AS liquidity
+		FROM lp_actions
+		WHERE pool_address = $1
+		  AND block_number <= $2
+		  AND tick_lower <= $3
+		  AND tick_upper > $3
+		GROUP BY owner, tick_lower, tick_upper
+		HAVING SUM(liquidity_delta) > 0
+		ORDER BY SUM(liquidity_delta) DESC
+		LIMIT $4
+	`, poolAddress, blockNumber, currentTick, limit)
+	if err != nil {
+		return nil, fmt.Errorf("load active positions: query: %w", err)
+	}
+	defer rows.Close()
+
+	positions := make([]domain.LiquidityPosition, 0)
+
+	for rows.Next() {
+		var (
+			position  domain.LiquidityPosition
+			liquidity string
+		)
+
+		if err := rows.Scan(
+			&position.Owner,
+			&position.TickLower,
+			&position.TickUpper,
+			&liquidity,
+		); err != nil {
+			return nil, fmt.Errorf("load active positions: scan: %w", err)
+		}
+
+		value, ok := new(big.Int).SetString(liquidity, 10)
+		if !ok {
+			return nil, fmt.Errorf(
+				"load active positions: parse liquidity %q",
+				liquidity,
+			)
+		}
+
+		position.PoolAddress = poolAddress
+		position.Liquidity = value
+
+		positions = append(positions, position)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("load active positions: iterate: %w", err)
+	}
+
+	return positions, nil
+}
