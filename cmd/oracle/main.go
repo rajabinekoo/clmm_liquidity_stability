@@ -9,6 +9,7 @@ import (
 	"oracle/internal/uniswapv3"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"oracle/internal/database"
@@ -41,6 +42,46 @@ func run() error {
 		config.TheGraphAPIKey,
 		config.TheGraphTimeout,
 	)
+
+	curveAmounts, err := config.AmountGridToken0Raw()
+	if err != nil {
+		return err
+	}
+
+	if len(curveAmounts) < 2 {
+		return fmt.Errorf("amount grid must contain at least two values")
+	}
+
+	slog.Info(
+		"amount grid loaded",
+		"token0", config.Token0Symbol,
+		"amounts", len(curveAmounts),
+	)
+
+	outputDir := config.OutputDir()
+
+	poolConfigPath := filepath.Join(
+		outputDir,
+		"pool_config.json",
+	)
+
+	if err := utils.WritePoolConfigJSON(
+		poolConfigPath,
+		config,
+	); err != nil {
+		return err
+	}
+
+	slog.Info(
+		"pool config exported",
+		"path", poolConfigPath,
+	)
+
+	thresholdsBps := []decimal.Decimal{
+		decimal.NewFromInt(10),
+		decimal.NewFromInt(50),
+		decimal.NewFromInt(100),
+	}
 
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
@@ -97,29 +138,18 @@ func run() error {
 		"initialized_ticks", len(pool.InitializedTicks),
 	)
 
-	simulator, err := uniswapv3.NewSimulator(500) // USDC/WETH 0.05% fee tier
+	simulator, err := uniswapv3.NewSimulator(config.PoolFee)
 	if err != nil {
 		return err
 	}
 
-	amountIn := new(big.Int).Mul(
-		big.NewInt(1_000),
-		big.NewInt(1_000_000), // 1000 USDC with 6 decimals
-	)
-
-	//swap, err := simulator.SimulateExactInputNoCross(
-	//	pool,
-	//	uniswapv3.ExactInputRequest{
-	//		AmountIn:   amountIn,
-	//		ZeroForOne: true, // token0 -> token1, USDC -> WETH
-	//	},
-	//)
+	amountIn := new(big.Int).Set(curveAmounts[0])
 
 	swap1, err := simulator.SimulateExactInput(
 		pool,
 		uniswapv3.ExactInputRequest{
 			AmountIn:   amountIn,
-			ZeroForOne: true, // token0 -> token1, USDC -> WETH
+			ZeroForOne: true,
 		},
 	)
 	if err != nil {
@@ -141,16 +171,13 @@ func run() error {
 		"price_impact_bps", swap1.PriceImpactBps.String(),
 	)
 
-	amountIn = new(big.Int).Mul(
-		big.NewInt(1_000_000),
-		big.NewInt(1_000_000), // 1,000,000 USDC
-	)
+	amountIn = new(big.Int).Set(curveAmounts[len(curveAmounts)-1])
 
 	swap2, err := simulator.SimulateExactInput(
 		pool,
 		uniswapv3.ExactInputRequest{
 			AmountIn:   amountIn,
-			ZeroForOne: true, // token0 -> token1, USDC -> WETH
+			ZeroForOne: true,
 		},
 	)
 	if err != nil {
@@ -172,28 +199,16 @@ func run() error {
 		"price_impact_bps", swap2.PriceImpactBps.String(),
 	)
 
-	simulator2, err := uniswapv3.NewSimulator(500) // 0.05%
-	if err != nil {
-		return err
-	}
-
-	curveService := services.NewPriceImpactCurveService(simulator2)
+	curveService := services.NewPriceImpactCurveService(
+		simulator,
+	)
 
 	curve, err := curveService.Build(
 		ctx,
 		services.PriceImpactCurveRequest{
-			Pool: pool,
-			AmountsIn: []*big.Int{
-				usdcAmount(1_000),
-				usdcAmount(10_000),
-				usdcAmount(50_000),
-				usdcAmount(100_000),
-				usdcAmount(500_000),
-				usdcAmount(1_000_000),
-				usdcAmount(2_000_000),
-				usdcAmount(5_000_000),
-			},
-			ZeroForOne: true, // USDC -> WETH
+			Pool:       pool,
+			AmountsIn:  curveAmounts,
+			ZeroForOne: true,
 		},
 	)
 	if err != nil {
@@ -216,11 +231,7 @@ func run() error {
 
 	summary, err := curveService.Summarize(
 		curve,
-		[]decimal.Decimal{
-			decimal.NewFromInt(10),  // 10 bps
-			decimal.NewFromInt(50),  // 50 bps
-			decimal.NewFromInt(100), // 100 bps
-		},
+		thresholdsBps,
 	)
 	if err != nil {
 		return err
@@ -243,78 +254,6 @@ func run() error {
 		)
 	}
 
-	curveAmounts := []*big.Int{
-		usdcAmount(1_000),
-		usdcAmount(10_000),
-		usdcAmount(50_000),
-		usdcAmount(100_000),
-		usdcAmount(500_000),
-		usdcAmount(1_000_000),
-		usdcAmount(2_000_000),
-		usdcAmount(5_000_000),
-	}
-
-	//positions, err := poolStateRepository.LoadActivePositionsAt(
-	//	ctx,
-	//	pool.PoolAddress,
-	//	pool.BlockNumber,
-	//	pool.CurrentTick,
-	//	5,
-	//)
-	//if err != nil {
-	//	return err
-	//}
-
-	//for _, position := range positions {
-	//	counterfactualPool, err := uniswapv3.RemoveLiquidity(
-	//		pool,
-	//		position,
-	//	)
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	counterfactualCurve, err := curveService.Build(
-	//		ctx,
-	//		services.PriceImpactCurveRequest{
-	//			Pool:       counterfactualPool,
-	//			AmountsIn:  curveAmounts,
-	//			ZeroForOne: true,
-	//		},
-	//	)
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	counterfactualSummary, err := curveService.Summarize(
-	//		counterfactualCurve,
-	//		[]decimal.Decimal{
-	//			decimal.NewFromInt(10),
-	//			decimal.NewFromInt(50),
-	//			decimal.NewFromInt(100),
-	//		},
-	//	)
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	deltaAUC := counterfactualSummary.PriceImpactAUCBps.
-	//		Sub(summary.PriceImpactAUCBps)
-	//
-	//	slog.Info(
-	//		"counterfactual liquidity removal",
-	//		"owner", position.Owner,
-	//		"tick_lower", position.TickLower,
-	//		"tick_upper", position.TickUpper,
-	//		"position_liquidity", position.Liquidity.String(),
-	//		"base_auc_bps", summary.PriceImpactAUCBps.String(),
-	//		"counterfactual_auc_bps", counterfactualSummary.PriceImpactAUCBps.String(),
-	//		"delta_auc_bps", deltaAUC.String(),
-	//		"base_active_liquidity", pool.Liquidity.String(),
-	//		"counterfactual_active_liquidity", counterfactualPool.Liquidity.String(),
-	//	)
-	//}
-
 	impactService := services.NewLiquidityImpactService(
 		poolStateRepository,
 		curveService,
@@ -326,12 +265,8 @@ func run() error {
 			Pool:          pool,
 			AmountsIn:     curveAmounts,
 			ZeroForOne:    true,
-			PositionLimit: 10,
-			ThresholdsBps: []decimal.Decimal{
-				decimal.NewFromInt(10),
-				decimal.NewFromInt(50),
-				decimal.NewFromInt(100),
-			},
+			PositionLimit: config.PositionLimit,
+			ThresholdsBps: thresholdsBps,
 		},
 	)
 	if err != nil {
@@ -375,7 +310,7 @@ func run() error {
 		}
 	}
 
-	wethEquivalentAmounts, err := token1EquivalentAmounts(
+	token1Amounts, err := token1EquivalentAmounts(
 		curveAmounts,
 		pool.SqrtPriceX96,
 	)
@@ -388,13 +323,9 @@ func run() error {
 		services.BidirectionalLiquidityImpactRequest{
 			Pool:                pool,
 			ZeroForOneAmountsIn: curveAmounts,
-			OneForZeroAmountsIn: wethEquivalentAmounts,
-			PositionLimit:       10,
-			ThresholdsBps: []decimal.Decimal{
-				decimal.NewFromInt(10),
-				decimal.NewFromInt(50),
-				decimal.NewFromInt(100),
-			},
+			OneForZeroAmountsIn: token1Amounts,
+			PositionLimit:       config.PositionLimit,
+			ThresholdsBps:       thresholdsBps,
 		},
 	)
 	if err != nil {
@@ -434,10 +365,13 @@ func run() error {
 		)
 	}
 
-	csvPath := fmt.Sprintf(
-		"outputs/bidirectional_lsis_%s_%d.csv",
-		pool.PoolAddress,
-		pool.BlockNumber,
+	csvPath := filepath.Join(
+		outputDir,
+		fmt.Sprintf(
+			"bidirectional_lsis_%s_%d.csv",
+			pool.PoolAddress,
+			pool.BlockNumber,
+		),
 	)
 
 	if err := services.WriteBidirectionalImpactCSV(
@@ -460,10 +394,13 @@ func run() error {
 		return err
 	}
 
-	correlationPath := fmt.Sprintf(
-		"outputs/bidirectional_lsis_correlations_%s_%d.csv",
-		pool.PoolAddress,
-		pool.BlockNumber,
+	correlationPath := filepath.Join(
+		outputDir,
+		fmt.Sprintf(
+			"bidirectional_lsis_correlations_%s_%d.csv",
+			pool.PoolAddress,
+			pool.BlockNumber,
+		),
 	)
 
 	if err := services.WriteImpactCorrelationCSV(
@@ -501,27 +438,36 @@ func run() error {
 			PoolAddress: pool.PoolAddress,
 
 			LatestBlock:    pool.BlockNumber,
-			LookbackBlocks: 50_000,
-			StepBlocks:     5_000,
-			MaxSnapshots:   10,
+			LookbackBlocks: config.LookbackBlocks,
+			StepBlocks:     config.StepBlocks,
+			MaxSnapshots:   config.MaxSnapshots,
 
 			ZeroForOneAmountsIn: curveAmounts,
-			PositionLimit:       10,
-			ThresholdsBps: []decimal.Decimal{
-				decimal.NewFromInt(10),
-				decimal.NewFromInt(50),
-				decimal.NewFromInt(100),
-			},
+			PositionLimit:       config.PositionLimit,
+			ThresholdsBps:       thresholdsBps,
 		},
 	)
 	if err != nil {
 		return err
 	}
 
-	batchSummaryPath := fmt.Sprintf(
-		"outputs/snapshot_batch_summary_%s_%d.csv",
-		pool.PoolAddress,
-		pool.BlockNumber,
+	batchObservationCount := 0
+
+	for _, result := range batchResults {
+		if result.Report == nil {
+			continue
+		}
+
+		batchObservationCount += len(result.Report.Positions)
+	}
+
+	batchSummaryPath := filepath.Join(
+		outputDir,
+		fmt.Sprintf(
+			"snapshot_batch_summary_%s_%d.csv",
+			pool.PoolAddress,
+			pool.BlockNumber,
+		),
 	)
 
 	if err := services.WriteSnapshotBatchSummaryCSV(
@@ -531,10 +477,18 @@ func run() error {
 		return err
 	}
 
-	batchPositionsPath := fmt.Sprintf(
-		"outputs/snapshot_batch_positions_%s_%d.csv",
-		pool.PoolAddress,
-		pool.BlockNumber,
+	slog.Info(
+		"snapshot batch summary exported",
+		"path", batchSummaryPath,
+	)
+
+	batchPositionsPath := filepath.Join(
+		outputDir,
+		fmt.Sprintf(
+			"snapshot_batch_positions_%s_%d.csv",
+			pool.PoolAddress,
+			pool.BlockNumber,
+		),
 	)
 
 	if err := services.WriteSnapshotBatchPositionsCSV(
@@ -549,10 +503,13 @@ func run() error {
 		"path", batchPositionsPath,
 	)
 
-	batchRangesPath := fmt.Sprintf(
-		"outputs/snapshot_batch_ranges_%s_%d.csv",
-		pool.PoolAddress,
-		pool.BlockNumber,
+	batchRangesPath := filepath.Join(
+		outputDir,
+		fmt.Sprintf(
+			"snapshot_batch_ranges_%s_%d.csv",
+			pool.PoolAddress,
+			pool.BlockNumber,
+		),
 	)
 
 	if err := services.WriteSnapshotBatchRangeAggregateCSV(
@@ -574,10 +531,13 @@ func run() error {
 		return err
 	}
 
-	batchCorrelationsPath := fmt.Sprintf(
-		"outputs/snapshot_batch_position_correlations_%s_%d.csv",
-		pool.PoolAddress,
-		pool.BlockNumber,
+	batchCorrelationsPath := filepath.Join(
+		outputDir,
+		fmt.Sprintf(
+			"snapshot_batch_position_correlations_%s_%d.csv",
+			pool.PoolAddress,
+			pool.BlockNumber,
+		),
 	)
 
 	if err := services.WriteImpactCorrelationCSV(
@@ -590,7 +550,7 @@ func run() error {
 	slog.Info(
 		"snapshot batch position correlations exported",
 		"path", batchCorrelationsPath,
-		"observations", len(batchResults)*10,
+		"observations", batchObservationCount,
 	)
 
 	for _, correlation := range batchCorrelations {
@@ -611,10 +571,13 @@ func run() error {
 		return err
 	}
 
-	batchDiagnosticsPath := fmt.Sprintf(
-		"outputs/snapshot_batch_diagnostics_%s_%d.csv",
-		pool.PoolAddress,
-		pool.BlockNumber,
+	batchDiagnosticsPath := filepath.Join(
+		outputDir,
+		fmt.Sprintf(
+			"snapshot_batch_diagnostics_%s_%d.csv",
+			pool.PoolAddress,
+			pool.BlockNumber,
+		),
 	)
 
 	if err := services.WriteSnapshotBatchDiagnosticsCSV(
@@ -650,17 +613,20 @@ func run() error {
 		return err
 	}
 
-	empiricalSummaryPath := fmt.Sprintf(
-		"outputs/empirical_summary_%s_%d.csv",
-		pool.PoolAddress,
-		pool.BlockNumber,
+	empiricalSummaryPath := filepath.Join(
+		outputDir,
+		fmt.Sprintf(
+			"empirical_summary_%s_%d.csv",
+			pool.PoolAddress,
+			pool.BlockNumber,
+		),
 	)
 
 	if err := services.WriteEmpiricalSummaryCSV(
 		empiricalSummaryPath,
 		empiricalSummary,
 		len(batchDiagnostics),
-		len(batchResults)*10,
+		batchObservationCount,
 	); err != nil {
 		return err
 	}
@@ -670,75 +636,93 @@ func run() error {
 		"path", empiricalSummaryPath,
 	)
 
-	//validationService := services.NewSwapValidationService(
-	//	provider,
-	//	poolStateRepository,
-	//	simulator,
-	//)
-	//
-	//validationResults, err := validationService.ValidateFirstSwapsPerBlock(
-	//	ctx,
-	//	services.SwapValidationRequest{
-	//		PoolAddress:     pool.PoolAddress,
-	//		FromBlock:       blockLookback(pool.BlockNumber, 200),
-	//		ToBlock:         pool.BlockNumber - 1,
-	//		PageSize:        20,
-	//		MaxSamples:      5,
-	//		BlockWindowSize: 8,
-	//	},
-	//)
-	//if err != nil {
-	//	slog.Warn(
-	//		"swap validation skipped",
-	//		"reason", err,
-	//	)
-	//} else {
-	//	for _, result := range validationResults {
-	//		slog.Info(
-	//			"swap validation result",
-	//			"swap_id", result.SwapID,
-	//			"block_number", result.BlockNumber,
-	//			"log_index", result.LogIndex,
-	//			"zero_for_one", result.ZeroForOne,
-	//			"amount_in_raw", result.AmountInRaw.String(),
-	//			"actual_amount_out_raw", result.ActualAmountOutRaw.String(),
-	//			"sim_amount_out_raw", result.SimAmountOutRaw.String(),
-	//			"amount_out_abs_diff_raw", result.AmountOutAbsDiffRaw.String(),
-	//			"amount_out_diff_bps", result.AmountOutDiffBps.String(),
-	//			"actual_tick_after", result.ActualTickAfter,
-	//			"sim_tick_after", result.SimTickAfter,
-	//			"tick_delta", result.TickDelta,
-	//		)
-	//
-	//		validationPath := fmt.Sprintf(
-	//			"outputs/swap_validation_%s_%d_%d.csv",
-	//			pool.PoolAddress,
-	//			validationResults[0].BlockNumber,
-	//			validationResults[len(validationResults)-1].BlockNumber,
-	//		)
-	//
-	//		if err := services.WriteSwapValidationCSV(
-	//			validationPath,
-	//			validationResults,
-	//		); err != nil {
-	//			return err
-	//		}
-	//
-	//		slog.Info(
-	//			"swap validation csv exported",
-	//			"path", validationPath,
-	//		)
-	//	}
-	//}
+	validationService := services.NewSwapValidationService(
+		provider,
+		poolStateRepository,
+		simulator,
+	)
+
+	validationToBlock := pool.BlockNumber
+	if validationToBlock > 1 {
+		validationToBlock--
+	}
+
+	validationResults, err := validationService.ValidateFirstSwapsPerBlock(
+		ctx,
+		services.SwapValidationRequest{
+			PoolAddress: pool.PoolAddress,
+
+			FromBlock: blockLookback(
+				pool.BlockNumber,
+				config.LookbackBlocks,
+			),
+			ToBlock: validationToBlock,
+
+			PageSize:        20,
+			MaxSamples:      config.ValidationSamples,
+			BlockWindowSize: config.ValidationBlockWindowSize,
+		},
+	)
+	if err != nil {
+		slog.Warn(
+			"swap validation skipped",
+			"reason", err,
+		)
+
+		return nil
+	}
+
+	for _, result := range validationResults {
+		slog.Info(
+			"swap validation result",
+			"swap_id", result.SwapID,
+			"block_number", result.BlockNumber,
+			"log_index", result.LogIndex,
+			"zero_for_one", result.ZeroForOne,
+			"amount_in_raw", result.AmountInRaw.String(),
+			"actual_amount_out_raw", result.ActualAmountOutRaw.String(),
+			"sim_amount_out_raw", result.SimAmountOutRaw.String(),
+			"amount_out_abs_diff_raw", result.AmountOutAbsDiffRaw.String(),
+			"amount_out_diff_bps", result.AmountOutDiffBps.String(),
+			"actual_tick_after", result.ActualTickAfter,
+			"sim_tick_after", result.SimTickAfter,
+			"tick_delta", result.TickDelta,
+		)
+	}
+
+	if len(validationResults) == 0 {
+		slog.Warn(
+			"swap validation returned no samples",
+			"pool_address", pool.PoolAddress,
+		)
+
+		return nil
+	}
+
+	validationPath := filepath.Join(
+		outputDir,
+		fmt.Sprintf(
+			"swap_validation_%s_%d_%d.csv",
+			pool.PoolAddress,
+			validationResults[0].BlockNumber,
+			validationResults[len(validationResults)-1].BlockNumber,
+		),
+	)
+
+	if err := services.WriteSwapValidationCSV(
+		validationPath,
+		validationResults,
+	); err != nil {
+		return err
+	}
+
+	slog.Info(
+		"swap validation csv exported",
+		"path", validationPath,
+		"samples", len(validationResults),
+	)
 
 	return nil
-}
-
-func usdcAmount(units int64) *big.Int {
-	return new(big.Int).Mul(
-		big.NewInt(units),
-		big.NewInt(1_000_000), // USDC decimals = 6
-	)
 }
 
 func token1EquivalentAmounts(
