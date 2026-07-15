@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"oracle/internal/domain"
-	"oracle/internal/utils"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/utils"
 
 	"github.com/shopspring/decimal"
 )

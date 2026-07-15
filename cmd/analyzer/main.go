@@ -5,18 +5,19 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
-	"oracle/internal/providers"
-	"oracle/internal/uniswapv3"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 
-	"oracle/internal/database"
-	"oracle/internal/repositories"
-	"oracle/internal/services"
-	"oracle/internal/utils"
-	"oracle/migrations"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/providers"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/uniswapv3"
+
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/database"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/repositories"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/services"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/utils"
+	"github.com/rajabinekoo/clmm-liquidity-stability/migrations"
 
 	"github.com/shopspring/decimal"
 )
@@ -24,7 +25,7 @@ import (
 func main() {
 	if err := run(); err != nil {
 		slog.Error(
-			"oracle exited with error",
+			"analyzer exited with error",
 			"error", err,
 		)
 

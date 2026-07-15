@@ -1,4 +1,4 @@
-module oracle
+module github.com/rajabinekoo/clmm-liquidity-stability
 
 go 1.26.4
 

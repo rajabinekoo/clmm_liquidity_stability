@@ -4,7 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"oracle/internal/domain"
+
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
 )
 
 type EventRepository struct {

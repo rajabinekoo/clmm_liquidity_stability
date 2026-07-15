@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"oracle/internal/utils"
 	"strconv"
+
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/utils"
 
 	"github.com/shopspring/decimal"
 
-	"oracle/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
 )
 
 type rawSwap struct {

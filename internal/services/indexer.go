@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"oracle/internal/domain"
-	"oracle/internal/providers"
-	"oracle/internal/repositories"
-	"oracle/internal/utils"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/providers"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/repositories"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/utils"
 )
 
 type Indexer struct {

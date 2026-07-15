@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"sort"
 
-	"oracle/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
 )
 
 func RemoveLiquidity(

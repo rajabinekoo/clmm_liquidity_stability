@@ -8,12 +8,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"oracle/internal/database"
-	"oracle/internal/providers"
-	"oracle/internal/repositories"
-	"oracle/internal/services"
-	"oracle/internal/utils"
-	"oracle/migrations"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/database"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/providers"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/repositories"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/services"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/utils"
+	"github.com/rajabinekoo/clmm-liquidity-stability/migrations"
 )
 
 func main() {

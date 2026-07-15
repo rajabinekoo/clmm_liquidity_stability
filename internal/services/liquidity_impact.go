@@ -8,9 +8,9 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"oracle/internal/domain"
-	"oracle/internal/repositories"
-	"oracle/internal/uniswapv3"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/repositories"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/uniswapv3"
 )
 
 type LiquidityImpactService struct {

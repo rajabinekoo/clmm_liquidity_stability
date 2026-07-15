@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"strconv"
 
-	"oracle/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
 
 	"github.com/shopspring/decimal"
 )

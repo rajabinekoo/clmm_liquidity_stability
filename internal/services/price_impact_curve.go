@@ -7,8 +7,8 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"oracle/internal/domain"
-	"oracle/internal/uniswapv3"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/uniswapv3"
 )
 
 type PriceImpactCurveService struct {

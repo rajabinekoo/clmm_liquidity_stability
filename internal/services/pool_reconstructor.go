@@ -6,8 +6,8 @@ import (
 	"math/big"
 	"sort"
 
-	"oracle/internal/domain"
-	"oracle/internal/repositories"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/repositories"
 )
 
 type PoolReconstructor struct {

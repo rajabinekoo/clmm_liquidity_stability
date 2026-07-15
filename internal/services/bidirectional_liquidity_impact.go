@@ -9,7 +9,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"oracle/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
 )
 
 type BidirectionalLiquidityImpactRequest struct {
