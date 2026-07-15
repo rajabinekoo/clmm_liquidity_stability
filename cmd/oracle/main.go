@@ -37,6 +37,11 @@ func run() error {
 		return err
 	}
 
+	provider := providers.New(
+		config.TheGraphAPIKey,
+		config.TheGraphTimeout,
+	)
+
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		syscall.SIGINT,
@@ -484,71 +489,247 @@ func run() error {
 		)
 	}
 
-	provider := providers.New(
-		config.TheGraphAPIKey,
-		config.TheGraphTimeout,
-	)
-
-	validationService := services.NewSwapValidationService(
+	batchService := services.NewSnapshotBatchAnalysisService(
 		provider,
 		poolStateRepository,
-		simulator,
+		impactService,
 	)
 
-	validationResults, err := validationService.ValidateFirstSwapsPerBlock(
+	batchResults, err := batchService.Analyze(
 		ctx,
-		services.SwapValidationRequest{
-			PoolAddress:     pool.PoolAddress,
-			FromBlock:       blockLookback(pool.BlockNumber, 200),
-			ToBlock:         pool.BlockNumber - 1,
-			PageSize:        20,
-			MaxSamples:      5,
-			BlockWindowSize: 8,
+		services.SnapshotBatchRequest{
+			PoolAddress: pool.PoolAddress,
+
+			LatestBlock:    pool.BlockNumber,
+			LookbackBlocks: 50_000,
+			StepBlocks:     5_000,
+			MaxSnapshots:   10,
+
+			ZeroForOneAmountsIn: curveAmounts,
+			PositionLimit:       10,
+			ThresholdsBps: []decimal.Decimal{
+				decimal.NewFromInt(10),
+				decimal.NewFromInt(50),
+				decimal.NewFromInt(100),
+			},
 		},
 	)
 	if err != nil {
-		slog.Warn(
-			"swap validation skipped",
-			"reason", err,
-		)
-	} else {
-		for _, result := range validationResults {
-			slog.Info(
-				"swap validation result",
-				"swap_id", result.SwapID,
-				"block_number", result.BlockNumber,
-				"log_index", result.LogIndex,
-				"zero_for_one", result.ZeroForOne,
-				"amount_in_raw", result.AmountInRaw.String(),
-				"actual_amount_out_raw", result.ActualAmountOutRaw.String(),
-				"sim_amount_out_raw", result.SimAmountOutRaw.String(),
-				"amount_out_abs_diff_raw", result.AmountOutAbsDiffRaw.String(),
-				"amount_out_diff_bps", result.AmountOutDiffBps.String(),
-				"actual_tick_after", result.ActualTickAfter,
-				"sim_tick_after", result.SimTickAfter,
-				"tick_delta", result.TickDelta,
-			)
-
-			validationPath := fmt.Sprintf(
-				"outputs/swap_validation_%s_%d_%d.csv",
-				pool.PoolAddress,
-				validationResults[0].BlockNumber,
-				validationResults[len(validationResults)-1].BlockNumber,
-			)
-
-			if err := services.WriteSwapValidationCSV(
-				validationPath,
-				validationResults,
-			); err != nil {
-				return err
-			}
-
-			slog.Info(
-				"swap validation csv exported",
-				"path", validationPath,
-			)
-		}
+		return err
 	}
+
+	batchSummaryPath := fmt.Sprintf(
+		"outputs/snapshot_batch_summary_%s_%d.csv",
+		pool.PoolAddress,
+		pool.BlockNumber,
+	)
+
+	if err := services.WriteSnapshotBatchSummaryCSV(
+		batchSummaryPath,
+		batchResults,
+	); err != nil {
+		return err
+	}
+
+	batchPositionsPath := fmt.Sprintf(
+		"outputs/snapshot_batch_positions_%s_%d.csv",
+		pool.PoolAddress,
+		pool.BlockNumber,
+	)
+
+	if err := services.WriteSnapshotBatchPositionsCSV(
+		batchPositionsPath,
+		batchResults,
+	); err != nil {
+		return err
+	}
+
+	slog.Info(
+		"snapshot batch positions exported",
+		"path", batchPositionsPath,
+	)
+
+	batchRangesPath := fmt.Sprintf(
+		"outputs/snapshot_batch_ranges_%s_%d.csv",
+		pool.PoolAddress,
+		pool.BlockNumber,
+	)
+
+	if err := services.WriteSnapshotBatchRangeAggregateCSV(
+		batchRangesPath,
+		batchResults,
+	); err != nil {
+		return err
+	}
+
+	slog.Info(
+		"snapshot batch ranges exported",
+		"path", batchRangesPath,
+	)
+
+	batchCorrelations, err := services.BuildSnapshotBatchPositionCorrelations(
+		batchResults,
+	)
+	if err != nil {
+		return err
+	}
+
+	batchCorrelationsPath := fmt.Sprintf(
+		"outputs/snapshot_batch_position_correlations_%s_%d.csv",
+		pool.PoolAddress,
+		pool.BlockNumber,
+	)
+
+	if err := services.WriteImpactCorrelationCSV(
+		batchCorrelationsPath,
+		batchCorrelations,
+	); err != nil {
+		return err
+	}
+
+	slog.Info(
+		"snapshot batch position correlations exported",
+		"path", batchCorrelationsPath,
+		"observations", len(batchResults)*10,
+	)
+
+	for _, correlation := range batchCorrelations {
+		slog.Info(
+			"snapshot batch position correlation",
+			"metric", correlation.Metric,
+			"target", correlation.Target,
+			"count", correlation.Count,
+			"pearson", correlation.Pearson,
+			"spearman", correlation.Spearman,
+		)
+	}
+
+	batchDiagnostics, err := services.BuildSnapshotBatchDiagnostics(
+		batchResults,
+	)
+	if err != nil {
+		return err
+	}
+
+	batchDiagnosticsPath := fmt.Sprintf(
+		"outputs/snapshot_batch_diagnostics_%s_%d.csv",
+		pool.PoolAddress,
+		pool.BlockNumber,
+	)
+
+	if err := services.WriteSnapshotBatchDiagnosticsCSV(
+		batchDiagnosticsPath,
+		batchDiagnostics,
+	); err != nil {
+		return err
+	}
+
+	slog.Info(
+		"snapshot batch diagnostics exported",
+		"path", batchDiagnosticsPath,
+		"snapshots", len(batchDiagnostics),
+	)
+
+	for _, diagnostic := range batchDiagnostics {
+		slog.Info(
+			"snapshot batch diagnostic",
+			"snapshot_index", diagnostic.SnapshotIndex,
+			"block_number", diagnostic.BlockNumber,
+			"top1_lsis_share", diagnostic.Top1LSISShare.String(),
+			"top3_lsis_share", diagnostic.Top3LSISShare.String(),
+			"total_lsis_hhi_topk", diagnostic.TotalLSISHHITopK.String(),
+			"effective_lsis_positions_topk", diagnostic.EffectiveLSISPositionsTopK.String(),
+			"total_lsis_gini_topk", diagnostic.TotalLSISGiniTopK.String(),
+		)
+	}
+
+	empiricalSummary, err := services.BuildSnapshotBatchEmpiricalSummary(
+		batchDiagnostics,
+	)
+	if err != nil {
+		return err
+	}
+
+	empiricalSummaryPath := fmt.Sprintf(
+		"outputs/empirical_summary_%s_%d.csv",
+		pool.PoolAddress,
+		pool.BlockNumber,
+	)
+
+	if err := services.WriteEmpiricalSummaryCSV(
+		empiricalSummaryPath,
+		empiricalSummary,
+		len(batchDiagnostics),
+		len(batchResults)*10,
+	); err != nil {
+		return err
+	}
+
+	slog.Info(
+		"empirical summary exported",
+		"path", empiricalSummaryPath,
+	)
+
+	//validationService := services.NewSwapValidationService(
+	//	provider,
+	//	poolStateRepository,
+	//	simulator,
+	//)
+	//
+	//validationResults, err := validationService.ValidateFirstSwapsPerBlock(
+	//	ctx,
+	//	services.SwapValidationRequest{
+	//		PoolAddress:     pool.PoolAddress,
+	//		FromBlock:       blockLookback(pool.BlockNumber, 200),
+	//		ToBlock:         pool.BlockNumber - 1,
+	//		PageSize:        20,
+	//		MaxSamples:      5,
+	//		BlockWindowSize: 8,
+	//	},
+	//)
+	//if err != nil {
+	//	slog.Warn(
+	//		"swap validation skipped",
+	//		"reason", err,
+	//	)
+	//} else {
+	//	for _, result := range validationResults {
+	//		slog.Info(
+	//			"swap validation result",
+	//			"swap_id", result.SwapID,
+	//			"block_number", result.BlockNumber,
+	//			"log_index", result.LogIndex,
+	//			"zero_for_one", result.ZeroForOne,
+	//			"amount_in_raw", result.AmountInRaw.String(),
+	//			"actual_amount_out_raw", result.ActualAmountOutRaw.String(),
+	//			"sim_amount_out_raw", result.SimAmountOutRaw.String(),
+	//			"amount_out_abs_diff_raw", result.AmountOutAbsDiffRaw.String(),
+	//			"amount_out_diff_bps", result.AmountOutDiffBps.String(),
+	//			"actual_tick_after", result.ActualTickAfter,
+	//			"sim_tick_after", result.SimTickAfter,
+	//			"tick_delta", result.TickDelta,
+	//		)
+	//
+	//		validationPath := fmt.Sprintf(
+	//			"outputs/swap_validation_%s_%d_%d.csv",
+	//			pool.PoolAddress,
+	//			validationResults[0].BlockNumber,
+	//			validationResults[len(validationResults)-1].BlockNumber,
+	//		)
+	//
+	//		if err := services.WriteSwapValidationCSV(
+	//			validationPath,
+	//			validationResults,
+	//		); err != nil {
+	//			return err
+	//		}
+	//
+	//		slog.Info(
+	//			"swap validation csv exported",
+	//			"path", validationPath,
+	//		)
+	//	}
+	//}
 
 	return nil
 }

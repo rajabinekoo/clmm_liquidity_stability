@@ -1,0 +1,409 @@
+package services
+
+import (
+	"context"
+	"encoding/csv"
+	"fmt"
+	"math/big"
+	"os"
+	"path/filepath"
+	"strconv"
+
+	"github.com/shopspring/decimal"
+
+	"oracle/internal/domain"
+	"oracle/internal/providers"
+	"oracle/internal/repositories"
+	"oracle/internal/uniswapv3"
+)
+
+type SnapshotBatchAnalysisService struct {
+	provider   *providers.Client
+	repository *repositories.PoolStateRepository
+	impact     *LiquidityImpactService
+}
+
+func NewSnapshotBatchAnalysisService(
+	provider *providers.Client,
+	repository *repositories.PoolStateRepository,
+	impact *LiquidityImpactService,
+) *SnapshotBatchAnalysisService {
+	return &SnapshotBatchAnalysisService{
+		provider:   provider,
+		repository: repository,
+		impact:     impact,
+	}
+}
+
+type SnapshotBatchRequest struct {
+	PoolAddress string
+
+	LatestBlock    uint64
+	LookbackBlocks uint64
+	StepBlocks     uint64
+	MaxSnapshots   int
+
+	ZeroForOneAmountsIn []*big.Int
+	PositionLimit       int
+	ThresholdsBps       []decimal.Decimal
+}
+
+type SnapshotBatchResult struct {
+	SnapshotIndex int
+
+	PoolAddress string
+	BlockNumber uint64
+	CurrentTick int
+
+	ActiveLiquidity string
+
+	PositionCount int
+
+	ZeroForOneBaseAUCBps decimal.Decimal
+	OneForZeroBaseAUCBps decimal.Decimal
+
+	TopPositionLabel string
+	TopTickLower     int
+	TopTickUpper     int
+
+	TopActiveLiquidityShare decimal.Decimal
+
+	TopZeroForOneLSISBps decimal.Decimal
+	TopOneForZeroLSISBps decimal.Decimal
+	TopTotalLSISBps      decimal.Decimal
+	TopMaxDirectionalBps decimal.Decimal
+
+	SumTotalLSISBps decimal.Decimal
+}
+
+type SnapshotBatchDetailedResult struct {
+	Summary SnapshotBatchResult
+	Pool    *domain.ReconstructedPool
+	Report  *BidirectionalLiquidityImpactReport
+}
+
+func (s *SnapshotBatchAnalysisService) Analyze(
+	ctx context.Context,
+	req SnapshotBatchRequest,
+) ([]SnapshotBatchDetailedResult, error) {
+	if req.PoolAddress == "" {
+		return nil, fmt.Errorf("snapshot batch analysis: pool address is required")
+	}
+	if req.LatestBlock == 0 {
+		return nil, fmt.Errorf("snapshot batch analysis: latest block is required")
+	}
+	if req.LookbackBlocks == 0 {
+		req.LookbackBlocks = 50_000
+	}
+	if req.StepBlocks == 0 {
+		req.StepBlocks = 5_000
+	}
+	if req.MaxSnapshots <= 0 {
+		req.MaxSnapshots = 10
+	}
+	if req.PositionLimit <= 0 {
+		req.PositionLimit = 10
+	}
+	if len(req.ZeroForOneAmountsIn) == 0 {
+		return nil, fmt.Errorf("snapshot batch analysis: zero_for_one amounts are required")
+	}
+	if len(req.ThresholdsBps) == 0 {
+		req.ThresholdsBps = []decimal.Decimal{
+			decimal.NewFromInt(10),
+			decimal.NewFromInt(50),
+			decimal.NewFromInt(100),
+		}
+	}
+
+	blocks := snapshotCandidateBlocks(
+		req.LatestBlock,
+		req.LookbackBlocks,
+		req.StepBlocks,
+		req.MaxSnapshots,
+	)
+
+	results := make([]SnapshotBatchDetailedResult, 0, len(blocks))
+
+	for index, blockNumber := range blocks {
+		result, err := s.analyzeSingleSnapshot(
+			ctx,
+			index+1,
+			blockNumber,
+			req,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"snapshot batch analysis: block %d: %w",
+				blockNumber,
+				err,
+			)
+		}
+
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
+	ctx context.Context,
+	snapshotIndex int,
+	blockNumber uint64,
+	req SnapshotBatchRequest,
+) (SnapshotBatchDetailedResult, error) {
+	snapshot, err := s.provider.PoolSnapshotAt(
+		ctx,
+		req.PoolAddress,
+		blockNumber,
+	)
+	if err != nil {
+		return SnapshotBatchDetailedResult{}, fmt.Errorf(
+			"load pool snapshot: %w",
+			err,
+		)
+	}
+
+	input, err := s.repository.LoadReconstructionInputFromSnapshot(
+		ctx,
+		snapshot,
+	)
+	if err != nil {
+		return SnapshotBatchDetailedResult{}, err
+	}
+
+	pool, err := ReconstructPool(input)
+	if err != nil {
+		return SnapshotBatchDetailedResult{}, err
+	}
+
+	oneForZeroAmountsIn, err := batchToken1EquivalentAmounts(
+		req.ZeroForOneAmountsIn,
+		pool.SqrtPriceX96,
+	)
+	if err != nil {
+		return SnapshotBatchDetailedResult{}, err
+	}
+
+	report, err := s.impact.AnalyzeBidirectionalActivePositions(
+		ctx,
+		BidirectionalLiquidityImpactRequest{
+			Pool:                pool,
+			ZeroForOneAmountsIn: req.ZeroForOneAmountsIn,
+			OneForZeroAmountsIn: oneForZeroAmountsIn,
+			PositionLimit:       req.PositionLimit,
+			ThresholdsBps:       req.ThresholdsBps,
+		},
+	)
+	if err != nil {
+		return SnapshotBatchDetailedResult{}, err
+	}
+
+	summary := summarizeSnapshotBatchResult(
+		snapshotIndex,
+		pool,
+		report,
+	)
+
+	return SnapshotBatchDetailedResult{
+		Summary: summary,
+		Pool:    pool,
+		Report:  report,
+	}, nil
+}
+
+func summarizeSnapshotBatchResult(
+	snapshotIndex int,
+	pool *domain.ReconstructedPool,
+	report *BidirectionalLiquidityImpactReport,
+) SnapshotBatchResult {
+	result := SnapshotBatchResult{
+		SnapshotIndex: snapshotIndex,
+
+		PoolAddress: pool.PoolAddress,
+		BlockNumber: pool.BlockNumber,
+		CurrentTick: pool.CurrentTick,
+
+		ActiveLiquidity: pool.Liquidity.String(),
+
+		PositionCount: len(report.Positions),
+
+		ZeroForOneBaseAUCBps: report.ZeroForOneReport.BaseSummary.PriceImpactAUCBps,
+		OneForZeroBaseAUCBps: report.OneForZeroReport.BaseSummary.PriceImpactAUCBps,
+	}
+
+	sumTotal := decimal.Zero
+
+	for _, position := range report.Positions {
+		sumTotal = sumTotal.Add(position.TotalLSISBps)
+	}
+
+	result.SumTotalLSISBps = sumTotal
+
+	if len(report.Positions) == 0 {
+		return result
+	}
+
+	top := report.Positions[0]
+
+	result.TopPositionLabel = "P1"
+	result.TopTickLower = top.Position.TickLower
+	result.TopTickUpper = top.Position.TickUpper
+	result.TopActiveLiquidityShare = top.ActiveLiquidityShare
+	result.TopZeroForOneLSISBps = top.ZeroForOneLSISBps
+	result.TopOneForZeroLSISBps = top.OneForZeroLSISBps
+	result.TopTotalLSISBps = top.TotalLSISBps
+	result.TopMaxDirectionalBps = top.MaxDirectionalLSISBps
+
+	return result
+}
+
+func snapshotCandidateBlocks(
+	latestBlock uint64,
+	lookbackBlocks uint64,
+	stepBlocks uint64,
+	maxSnapshots int,
+) []uint64 {
+	if maxSnapshots <= 0 {
+		return nil
+	}
+	if stepBlocks == 0 {
+		stepBlocks = 1
+	}
+
+	earliest := uint64(1)
+	if latestBlock > lookbackBlocks {
+		earliest = latestBlock - lookbackBlocks
+	}
+
+	blocks := make([]uint64, 0, maxSnapshots)
+
+	for block := latestBlock; block >= earliest; {
+		blocks = append(blocks, block)
+
+		if len(blocks) >= maxSnapshots {
+			break
+		}
+		if block <= stepBlocks || block-stepBlocks < earliest {
+			break
+		}
+
+		block -= stepBlocks
+	}
+
+	return blocks
+}
+
+func batchToken1EquivalentAmounts(
+	token0Amounts []*big.Int,
+	sqrtPriceX96 *big.Int,
+) ([]*big.Int, error) {
+	result := make([]*big.Int, 0, len(token0Amounts))
+
+	for _, amount0 := range token0Amounts {
+		amount1, err := uniswapv3.QuoteToken1ForToken0Raw(
+			sqrtPriceX96,
+			amount0,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, amount1)
+	}
+
+	return result, nil
+}
+
+func WriteSnapshotBatchSummaryCSV(
+	path string,
+	results []SnapshotBatchDetailedResult,
+) error {
+	if len(results) == 0 {
+		return fmt.Errorf("write snapshot batch summary csv: results are empty")
+	}
+
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create snapshot batch csv directory: %w", err)
+		}
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create snapshot batch csv file: %w", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	if err := writer.Write(snapshotBatchCSVHeader()); err != nil {
+		return fmt.Errorf("write snapshot batch csv header: %w", err)
+	}
+
+	for _, result := range results {
+		if err := writer.Write(snapshotBatchCSVRow(result.Summary)); err != nil {
+			return fmt.Errorf("write snapshot batch csv row: %w", err)
+		}
+	}
+
+	if err := writer.Error(); err != nil {
+		return fmt.Errorf("flush snapshot batch csv writer: %w", err)
+	}
+
+	return nil
+}
+
+func snapshotBatchCSVHeader() []string {
+	return []string{
+		"snapshot_index",
+		"pool_address",
+		"block_number",
+		"current_tick",
+		"active_liquidity",
+		"position_count",
+
+		"zero_for_one_base_auc_bps",
+		"one_for_zero_base_auc_bps",
+
+		"top_position_label",
+		"top_tick_lower",
+		"top_tick_upper",
+		"top_active_liquidity_share",
+
+		"top_zero_for_one_lsis_bps",
+		"top_one_for_zero_lsis_bps",
+		"top_total_lsis_bps",
+		"top_max_directional_lsis_bps",
+
+		"sum_total_lsis_bps",
+	}
+}
+
+func snapshotBatchCSVRow(
+	result SnapshotBatchResult,
+) []string {
+	return []string{
+		strconv.Itoa(result.SnapshotIndex),
+		result.PoolAddress,
+		strconv.FormatUint(result.BlockNumber, 10),
+		strconv.Itoa(result.CurrentTick),
+		result.ActiveLiquidity,
+		strconv.Itoa(result.PositionCount),
+
+		result.ZeroForOneBaseAUCBps.String(),
+		result.OneForZeroBaseAUCBps.String(),
+
+		result.TopPositionLabel,
+		strconv.Itoa(result.TopTickLower),
+		strconv.Itoa(result.TopTickUpper),
+		result.TopActiveLiquidityShare.String(),
+
+		result.TopZeroForOneLSISBps.String(),
+		result.TopOneForZeroLSISBps.String(),
+		result.TopTotalLSISBps.String(),
+		result.TopMaxDirectionalBps.String(),
+
+		result.SumTotalLSISBps.String(),
+	}
+}
