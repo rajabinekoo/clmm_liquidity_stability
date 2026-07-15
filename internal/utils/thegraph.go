@@ -178,3 +178,49 @@ func GenerateBurnsQuery(
 		toBlock,
 	)
 }
+
+const swapsQuery = `
+{
+  swaps(
+    first: %d
+    orderBy: id
+    orderDirection: asc
+    where: {
+      pool: "%s"
+      id_gt: "%s"
+      transaction_: {
+        blockNumber_gte: %d
+        blockNumber_lte: %d
+      }
+    }
+  ) {
+    id
+    amount0
+    amount1
+    sqrtPriceX96
+    tick
+    logIndex
+    timestamp
+    transaction {
+      id
+      blockNumber
+    }
+  }
+}`
+
+func GenerateSwapsQuery(
+	pool string,
+	fromBlock uint64,
+	toBlock uint64,
+	afterID string,
+	limit int,
+) string {
+	return fmt.Sprintf(
+		swapsQuery,
+		limit,
+		pool,
+		afterID,
+		fromBlock,
+		toBlock,
+	)
+}

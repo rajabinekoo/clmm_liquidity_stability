@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"oracle/internal/providers"
 	"oracle/internal/uniswapv3"
 	"os"
 	"os/signal"
@@ -483,6 +484,72 @@ func run() error {
 		)
 	}
 
+	provider := providers.New(
+		config.TheGraphAPIKey,
+		config.TheGraphTimeout,
+	)
+
+	validationService := services.NewSwapValidationService(
+		provider,
+		poolStateRepository,
+		simulator,
+	)
+
+	validationResults, err := validationService.ValidateFirstSwapsPerBlock(
+		ctx,
+		services.SwapValidationRequest{
+			PoolAddress:     pool.PoolAddress,
+			FromBlock:       blockLookback(pool.BlockNumber, 200),
+			ToBlock:         pool.BlockNumber - 1,
+			PageSize:        20,
+			MaxSamples:      5,
+			BlockWindowSize: 8,
+		},
+	)
+	if err != nil {
+		slog.Warn(
+			"swap validation skipped",
+			"reason", err,
+		)
+	} else {
+		for _, result := range validationResults {
+			slog.Info(
+				"swap validation result",
+				"swap_id", result.SwapID,
+				"block_number", result.BlockNumber,
+				"log_index", result.LogIndex,
+				"zero_for_one", result.ZeroForOne,
+				"amount_in_raw", result.AmountInRaw.String(),
+				"actual_amount_out_raw", result.ActualAmountOutRaw.String(),
+				"sim_amount_out_raw", result.SimAmountOutRaw.String(),
+				"amount_out_abs_diff_raw", result.AmountOutAbsDiffRaw.String(),
+				"amount_out_diff_bps", result.AmountOutDiffBps.String(),
+				"actual_tick_after", result.ActualTickAfter,
+				"sim_tick_after", result.SimTickAfter,
+				"tick_delta", result.TickDelta,
+			)
+
+			validationPath := fmt.Sprintf(
+				"outputs/swap_validation_%s_%d_%d.csv",
+				pool.PoolAddress,
+				validationResults[0].BlockNumber,
+				validationResults[len(validationResults)-1].BlockNumber,
+			)
+
+			if err := services.WriteSwapValidationCSV(
+				validationPath,
+				validationResults,
+			); err != nil {
+				return err
+			}
+
+			slog.Info(
+				"swap validation csv exported",
+				"path", validationPath,
+			)
+		}
+	}
+
 	return nil
 }
 
@@ -512,4 +579,15 @@ func token1EquivalentAmounts(
 	}
 
 	return result, nil
+}
+
+func blockLookback(
+	currentBlock uint64,
+	lookback uint64,
+) uint64 {
+	if currentBlock <= lookback {
+		return 1
+	}
+
+	return currentBlock - lookback
 }

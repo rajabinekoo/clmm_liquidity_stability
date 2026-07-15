@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"fmt"
 	"math/big"
+	"strconv"
 
 	"oracle/internal/domain"
+
+	"github.com/shopspring/decimal"
 )
 
 type PoolStateRepository struct {
@@ -311,4 +314,116 @@ func (r *PoolStateRepository) LoadActivePositionsAt(
 	}
 
 	return positions, nil
+}
+
+func (r *PoolStateRepository) LoadReconstructionInputFromSnapshot(
+	ctx context.Context,
+	snapshot domain.PoolSnapshot,
+) (domain.ReconstructionInput, error) {
+	if snapshot.PoolAddress == "" {
+		return domain.ReconstructionInput{}, fmt.Errorf(
+			"load reconstruction input from snapshot: pool address is empty",
+		)
+	}
+	if snapshot.BlockNumber == 0 {
+		return domain.ReconstructionInput{}, fmt.Errorf(
+			"load reconstruction input from snapshot: block number is zero",
+		)
+	}
+
+	currentTick, err := strconv.Atoi(snapshot.Tick)
+	if err != nil {
+		return domain.ReconstructionInput{}, fmt.Errorf(
+			"load reconstruction input from snapshot: parse tick %q: %w",
+			snapshot.Tick,
+			err,
+		)
+	}
+
+	sqrtPriceX96, err := decimalToBigInt(
+		snapshot.SqrtPriceX96,
+		"sqrt_price_x96",
+	)
+	if err != nil {
+		return domain.ReconstructionInput{}, fmt.Errorf(
+			"load reconstruction input from snapshot: %w",
+			err,
+		)
+	}
+
+	activeLiquidity, err := decimalToBigInt(
+		snapshot.ActiveLiquidity,
+		"active_liquidity",
+	)
+	if err != nil {
+		return domain.ReconstructionInput{}, fmt.Errorf(
+			"load reconstruction input from snapshot: %w",
+			err,
+		)
+	}
+
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{
+		ReadOnly:  true,
+		Isolation: sql.LevelRepeatableRead,
+	})
+	if err != nil {
+		return domain.ReconstructionInput{}, fmt.Errorf(
+			"load reconstruction input from snapshot: begin transaction: %w",
+			err,
+		)
+	}
+
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	changes, err := loadLiquidityChanges(
+		ctx,
+		tx,
+		snapshot.PoolAddress,
+		snapshot.BlockNumber,
+	)
+	if err != nil {
+		return domain.ReconstructionInput{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.ReconstructionInput{}, fmt.Errorf(
+			"load reconstruction input from snapshot: commit transaction: %w",
+			err,
+		)
+	}
+	committed = true
+
+	return domain.ReconstructionInput{
+		Snapshot: domain.ReconstructionSnapshot{
+			PoolAddress:  snapshot.PoolAddress,
+			BlockNumber:  snapshot.BlockNumber,
+			SqrtPriceX96: sqrtPriceX96,
+			CurrentTick:  &currentTick,
+			Liquidity:    activeLiquidity,
+		},
+		Changes: changes,
+	}, nil
+}
+
+func decimalToBigInt(
+	value decimal.Decimal,
+	field string,
+) (*big.Int, error) {
+	if value.IsNegative() {
+		return nil, fmt.Errorf("%s must not be negative: %s", field, value.String())
+	}
+
+	integerValue := value.Truncate(0).StringFixed(0)
+
+	result, ok := new(big.Int).SetString(integerValue, 10)
+	if !ok {
+		return nil, fmt.Errorf("parse %s as big.Int: %q", field, integerValue)
+	}
+
+	return result, nil
 }
