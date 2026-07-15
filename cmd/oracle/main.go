@@ -369,6 +369,120 @@ func run() error {
 		}
 	}
 
+	wethEquivalentAmounts, err := token1EquivalentAmounts(
+		curveAmounts,
+		pool.SqrtPriceX96,
+	)
+	if err != nil {
+		return err
+	}
+
+	bidirectionalReport, err := impactService.AnalyzeBidirectionalActivePositions(
+		ctx,
+		services.BidirectionalLiquidityImpactRequest{
+			Pool:                pool,
+			ZeroForOneAmountsIn: curveAmounts,
+			OneForZeroAmountsIn: wethEquivalentAmounts,
+			PositionLimit:       10,
+			ThresholdsBps: []decimal.Decimal{
+				decimal.NewFromInt(10),
+				decimal.NewFromInt(50),
+				decimal.NewFromInt(100),
+			},
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	slog.Info(
+		"bidirectional liquidity impact report",
+		"zero_for_one_base_auc_bps",
+		bidirectionalReport.ZeroForOneReport.BaseSummary.PriceImpactAUCBps.String(),
+		"one_for_zero_base_auc_bps",
+		bidirectionalReport.OneForZeroReport.BaseSummary.PriceImpactAUCBps.String(),
+		"positions",
+		len(bidirectionalReport.Positions),
+	)
+
+	for rank, impact := range bidirectionalReport.Positions {
+		slog.Info(
+			"bidirectional position liquidity impact",
+			"rank", rank+1,
+			"position_key", impact.PositionKey,
+			"tick_lower", impact.Position.TickLower,
+			"tick_upper", impact.Position.TickUpper,
+			"position_liquidity", impact.Position.Liquidity.String(),
+
+			"active_liquidity_share", impact.ActiveLiquidityShare.String(),
+			"range_width", impact.RangeWidth,
+			"distance_to_lower_tick", impact.DistanceToLowerTick,
+			"distance_to_upper_tick", impact.DistanceToUpperTick,
+			"distance_to_nearest_edge", impact.DistanceToNearestEdge,
+			"liquidity_density", impact.LiquidityDensity.String(),
+
+			"zero_for_one_lsis_bps", impact.ZeroForOneLSISBps.String(),
+			"one_for_zero_lsis_bps", impact.OneForZeroLSISBps.String(),
+			"total_lsis_bps", impact.TotalLSISBps.String(),
+			"max_directional_lsis_bps", impact.MaxDirectionalLSISBps.String(),
+		)
+	}
+
+	csvPath := fmt.Sprintf(
+		"outputs/bidirectional_lsis_%s_%d.csv",
+		pool.PoolAddress,
+		pool.BlockNumber,
+	)
+
+	if err := services.WriteBidirectionalImpactCSV(
+		csvPath,
+		pool,
+		bidirectionalReport,
+	); err != nil {
+		return err
+	}
+
+	slog.Info(
+		"bidirectional impact csv exported",
+		"path", csvPath,
+	)
+
+	correlations, err := services.BuildBidirectionalImpactCorrelations(
+		bidirectionalReport,
+	)
+	if err != nil {
+		return err
+	}
+
+	correlationPath := fmt.Sprintf(
+		"outputs/bidirectional_lsis_correlations_%s_%d.csv",
+		pool.PoolAddress,
+		pool.BlockNumber,
+	)
+
+	if err := services.WriteImpactCorrelationCSV(
+		correlationPath,
+		correlations,
+	); err != nil {
+		return err
+	}
+
+	slog.Info(
+		"bidirectional impact correlations exported",
+		"path", correlationPath,
+	)
+
+	for _, correlation := range correlations {
+		slog.Info(
+			"impact correlation",
+			"metric", correlation.Metric,
+			"target", correlation.Target,
+			"count", correlation.Count,
+			"pearson", correlation.Pearson,
+			"spearman", correlation.Spearman,
+		)
+	}
+
 	return nil
 }
 
@@ -377,4 +491,25 @@ func usdcAmount(units int64) *big.Int {
 		big.NewInt(units),
 		big.NewInt(1_000_000), // USDC decimals = 6
 	)
+}
+
+func token1EquivalentAmounts(
+	token0Amounts []*big.Int,
+	sqrtPriceX96 *big.Int,
+) ([]*big.Int, error) {
+	result := make([]*big.Int, 0, len(token0Amounts))
+
+	for _, amount0 := range token0Amounts {
+		amount1, err := uniswapv3.QuoteToken1ForToken0Raw(
+			sqrtPriceX96,
+			amount0,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, amount1)
+	}
+
+	return result, nil
 }
