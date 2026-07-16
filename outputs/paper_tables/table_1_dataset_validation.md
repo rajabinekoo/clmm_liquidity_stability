@@ -1,0 +1,7 @@
+| Pool | Fee tier | Token0/Token1 | Latest block | Snapshots | Top-K obs. | Validation swaps | Max diff (bps) | Max tick Δ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| USDC/USDT 0.01% | 100 | USDC/USDT | 25319064 | 24 | 480 | 30 | 0E-9 | 0 |
+| USDC/WETH 0.05% | 500 | USDC/WETH | 25206728 | 30 | 600 | 30 | 1.53E-7 | 0 |
+| USDC/WETH 0.30% | 3000 | USDC/WETH | 25440623 | 30 | 600 | 30 | 1.67E-7 | 0 |
+| WBTC/WETH 0.30% | 3000 | WBTC/WETH | 25539170 | 30 | 600 | 30 | 0.000850464 | 1 |
+| WETH/USDT 0.05% | 500 | WETH/USDT | 25544961 | 30 | 600 | 30 | 0.000083871 | 0 |

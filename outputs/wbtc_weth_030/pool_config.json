@@ -1,0 +1,42 @@
+{
+  "pool_name": "wbtc_weth_030",
+  "pool_address": "0xcbcdf9626bc03e24f779434178a73a0b4bad62ed",
+  "pool_fee": 3000,
+  "token0_symbol": "WBTC",
+  "token1_symbol": "WETH",
+  "token0_decimals": 8,
+  "token1_decimals": 18,
+  "amount_grid_token0_human": [
+    "0.01",
+    "0.05",
+    "0.1",
+    "0.5",
+    "1",
+    "2",
+    "5",
+    "10",
+    "20",
+    "50"
+  ],
+  "amount_grid_token0_raw": [
+    "1000000",
+    "5000000",
+    "10000000",
+    "50000000",
+    "100000000",
+    "200000000",
+    "500000000",
+    "1000000000",
+    "2000000000",
+    "5000000000"
+  ],
+  "window_size": 10000,
+  "page_size": 1000,
+  "confirmation_depth": 20,
+  "lookback_blocks": 300000,
+  "step_blocks": 10000,
+  "max_snapshots": 30,
+  "position_limit": 20,
+  "validation_samples": 30,
+  "validation_block_window_size": 8
+}

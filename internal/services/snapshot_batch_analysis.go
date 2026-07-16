@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -132,11 +133,14 @@ func (s *SnapshotBatchAnalysisService) Analyze(
 			req,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"snapshot batch analysis: block %d: %w",
-				blockNumber,
-				err,
+			slog.Warn(
+				"snapshot skipped",
+				"pool_address", req.PoolAddress,
+				"block_number", blockNumber,
+				"reason", err,
 			)
+
+			continue
 		}
 
 		results = append(results, result)

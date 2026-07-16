@@ -1,0 +1,17 @@
+metric,target,count,pearson,spearman
+active_liquidity_share,max_directional_lsis_bps,20,0.980051,1.000000
+distance_to_nearest_edge,max_directional_lsis_bps,20,-0.080708,0.165600
+normalized_liquidity_density,max_directional_lsis_bps,20,0.989291,0.542857
+range_width,max_directional_lsis_bps,20,-0.124776,0.230075
+active_liquidity_share,one_for_zero_lsis_bps,20,0.988324,0.990977
+distance_to_nearest_edge,one_for_zero_lsis_bps,20,-0.085593,0.234099
+normalized_liquidity_density,one_for_zero_lsis_bps,20,0.994618,0.526316
+range_width,one_for_zero_lsis_bps,20,-0.128135,0.233083
+active_liquidity_share,total_lsis_bps,20,0.982540,1.000000
+distance_to_nearest_edge,total_lsis_bps,20,-0.081625,0.165600
+normalized_liquidity_density,total_lsis_bps,20,0.990994,0.542857
+range_width,total_lsis_bps,20,-0.125563,0.230075
+active_liquidity_share,zero_for_one_lsis_bps,20,0.977059,1.000000
+distance_to_nearest_edge,zero_for_one_lsis_bps,20,-0.078421,0.165600
+normalized_liquidity_density,zero_for_one_lsis_bps,20,0.987207,0.542857
+range_width,zero_for_one_lsis_bps,20,-0.123419,0.230075
