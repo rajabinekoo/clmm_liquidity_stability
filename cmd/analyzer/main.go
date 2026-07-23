@@ -942,6 +942,32 @@ func run() error {
 		validationSummaryPath,
 	)
 
+	if err := runBurnEventStudy(
+		ctx,
+		provider,
+		poolStateRepository,
+		curveService,
+		pool,
+		curveAmounts,
+		token1Amounts,
+		thresholdsBps,
+		burnEventStudyConfig{
+			OutputDir: outputDir,
+
+			LookbackBlocks: config.LookbackBlocks,
+
+			PageSize: config.BurnPageSize,
+
+			SwapPageSize: config.BurnSwapPageSize,
+
+			MaxCandidates: config.BurnMaxCandidates,
+
+			MaxSamples: config.BurnMaxSamples,
+		},
+	); err != nil {
+		return err
+	}
+
 	return nil
 }
 

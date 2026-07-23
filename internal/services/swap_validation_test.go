@@ -539,6 +539,8 @@ func exactValidationSimulationResult(
 
 		FeeAmount: big.NewInt(1),
 
+		LiquidityAfter: big.NewInt(1_000),
+
 		TickBefore: 0,
 
 		TickAfter: 0,
@@ -586,6 +588,11 @@ func cloneValidationSimulationResult(
 	result.FeeAmount =
 		cloneBigInt(
 			value.FeeAmount,
+		)
+
+	result.LiquidityAfter =
+		cloneBigInt(
+			value.LiquidityAfter,
 		)
 
 	result.SqrtPriceBeforeX96 =

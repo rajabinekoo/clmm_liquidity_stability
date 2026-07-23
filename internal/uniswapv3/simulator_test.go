@@ -101,6 +101,12 @@ func TestSimulatorExactInputInsideSingleRange(
 		pool,
 		poolBefore,
 	)
+
+	assertBigIntEqual(
+		t,
+		result.LiquidityAfter,
+		pool.Liquidity,
+	)
 }
 
 func TestSimulatorAppliesFeePerSwapStep(
@@ -394,6 +400,12 @@ func TestSimulatorAppliesFeePerSwapStep(
 			expectedTick,
 		)
 	}
+
+	assertBigIntEqual(
+		t,
+		result.LiquidityAfter,
+		liquidityAfterFirstCross,
+	)
 }
 
 func TestSimulatorZeroForOneCrossesCurrentInitializedBoundary(
@@ -565,6 +577,12 @@ func TestSimulatorOneForZeroCrossesUpperBoundary(
 			result.TickAfter,
 		)
 	}
+
+	assertBigIntEqual(
+		t,
+		result.LiquidityAfter,
+		big.NewInt(0),
+	)
 }
 
 func TestSimulateExactInputNoCrossRejectsCrossing(

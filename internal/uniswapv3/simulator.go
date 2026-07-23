@@ -82,6 +82,10 @@ type ExactInputResult struct {
 	AmountOut *big.Int
 	FeeAmount *big.Int
 
+	// LiquidityAfter is the exact active liquidity after all initialized-tick
+	// crossings performed by this simulation.
+	LiquidityAfter *big.Int
+
 	TickBefore int
 
 	// TickAfter is the exact final protocol tick.
@@ -451,6 +455,10 @@ func (s *Simulator) SimulateExactInput(
 
 		FeeAmount: new(big.Int).Set(
 			totalFee,
+		),
+
+		LiquidityAfter: new(big.Int).Set(
+			state.liquidity,
 		),
 
 		TickBefore: pool.CurrentTick,

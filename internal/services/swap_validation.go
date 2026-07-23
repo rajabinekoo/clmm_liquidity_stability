@@ -803,6 +803,20 @@ func validateSwapSimulationResult(
 		)
 	}
 
+	if sim.LiquidityAfter == nil ||
+		sim.LiquidityAfter.Sign() < 0 {
+		return fmt.Errorf(
+			"simulated active liquidity after is invalid",
+		)
+	}
+
+	if sim.LiquidityAfter.BitLen() > 128 {
+		return fmt.Errorf(
+			"simulated active liquidity after exceeds uint128: %s",
+			sim.LiquidityAfter,
+		)
+	}
+
 	if sim.TickAfter !=
 		sim.TickAfterApprox {
 		return fmt.Errorf(

@@ -34,5 +34,9 @@
   "max_snapshots": 30,
   "position_limit": 20,
   "validation_samples": 30,
-  "validation_block_window_size": 8
+  "validation_block_window_size": 8,
+  "burn_page_size": 100,
+  "burn_swap_page_size": 1000,
+  "burn_max_candidates": 300,
+  "burn_max_samples": 30
 }

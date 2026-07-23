@@ -44,6 +44,11 @@ type Config struct {
 
 	ValidationSamples         int    `env:"VALIDATION_SAMPLES" envDefault:"30"`
 	ValidationBlockWindowSize uint64 `env:"VALIDATION_BLOCK_WINDOW_SIZE" envDefault:"8"`
+
+	BurnPageSize      int `env:"BURN_PAGE_SIZE" envDefault:"100"`
+	BurnSwapPageSize  int `env:"BURN_SWAP_PAGE_SIZE" envDefault:"1000"`
+	BurnMaxCandidates int `env:"BURN_MAX_CANDIDATES" envDefault:"300"`
+	BurnMaxSamples    int `env:"BURN_MAX_SAMPLES" envDefault:"30"`
 }
 
 type ExportedPoolConfig struct {
@@ -70,6 +75,11 @@ type ExportedPoolConfig struct {
 
 	ValidationSamples         int    `json:"validation_samples"`
 	ValidationBlockWindowSize uint64 `json:"validation_block_window_size"`
+
+	BurnPageSize      int `json:"burn_page_size"`
+	BurnSwapPageSize  int `json:"burn_swap_page_size"`
+	BurnMaxCandidates int `json:"burn_max_candidates"`
+	BurnMaxSamples    int `json:"burn_max_samples"`
 }
 
 func LoadConfig() (Config, error) {
@@ -193,6 +203,39 @@ func (c Config) Validate() error {
 		)
 	}
 
+	if c.BurnPageSize <= 0 ||
+		c.BurnPageSize > 1000 {
+		return fmt.Errorf(
+			"config: BURN_PAGE_SIZE must be between 1 and 1000",
+		)
+	}
+
+	if c.BurnSwapPageSize <= 0 ||
+		c.BurnSwapPageSize > 1000 {
+		return fmt.Errorf(
+			"config: BURN_SWAP_PAGE_SIZE must be between 1 and 1000",
+		)
+	}
+
+	if c.BurnMaxCandidates <= 0 {
+		return fmt.Errorf(
+			"config: BURN_MAX_CANDIDATES must be greater than zero",
+		)
+	}
+
+	if c.BurnMaxSamples <= 0 {
+		return fmt.Errorf(
+			"config: BURN_MAX_SAMPLES must be greater than zero",
+		)
+	}
+
+	if c.BurnMaxSamples >
+		c.BurnMaxCandidates {
+		return fmt.Errorf(
+			"config: BURN_MAX_SAMPLES must not exceed BURN_MAX_CANDIDATES",
+		)
+	}
+
 	return nil
 }
 
@@ -243,6 +286,14 @@ func WritePoolConfigJSON(
 
 		ValidationSamples:         cfg.ValidationSamples,
 		ValidationBlockWindowSize: cfg.ValidationBlockWindowSize,
+
+		BurnPageSize: cfg.BurnPageSize,
+
+		BurnSwapPageSize: cfg.BurnSwapPageSize,
+
+		BurnMaxCandidates: cfg.BurnMaxCandidates,
+
+		BurnMaxSamples: cfg.BurnMaxSamples,
 	}
 
 	if dir := filepath.Dir(path); dir != "." {

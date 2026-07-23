@@ -23,7 +23,7 @@ COMPOSE        ?= docker compose -f $(COMPOSE_FILE)
 
 # App commands
 INDEXER_CMD := go run ./cmd/indexer/main.go
-ANALYZER_CMD := go run ./cmd/analyzer/main.go
+ANALYZER_CMD := go run ./cmd/analyzer
 
 .PHONY: infra-up
 infra-up:
