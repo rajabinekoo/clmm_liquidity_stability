@@ -206,3 +206,41 @@ func absBigInt(
 		new(big.Int).Set(value),
 	)
 }
+
+// ValidateForSimulation checks whether the Swap contains an unambiguous
+// exact-input direction with strictly positive input and output amounts.
+//
+// Validate permits a single zero token delta for structural ingestion, but
+// such an event cannot be replayed as an exact-input simulation sample.
+func (s SwapEvent) ValidateForSimulation() error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+
+	if !s.IsZeroForOne() &&
+		!s.IsOneForZero() {
+		return fmt.Errorf(
+			"swap does not have opposite non-zero token deltas: amount0=%s amount1=%s",
+			s.Amount0Raw,
+			s.Amount1Raw,
+		)
+	}
+
+	amountIn := s.AmountInRaw()
+	if amountIn.Sign() <= 0 {
+		return fmt.Errorf(
+			"swap input amount must be positive: %s",
+			amountIn,
+		)
+	}
+
+	amountOut := s.AmountOutRaw()
+	if amountOut.Sign() <= 0 {
+		return fmt.Errorf(
+			"swap output amount must be positive: %s",
+			amountOut,
+		)
+	}
+
+	return nil
+}

@@ -643,84 +643,303 @@ func run() error {
 		simulator,
 	)
 
+	// The local reconstruction snapshot and LP-action checkpoint are complete
+	// through pool.BlockNumber. Therefore a Swap in this block can safely use
+	// block-1 as its starting snapshot.
 	validationToBlock := pool.BlockNumber
-	if validationToBlock > 1 {
-		validationToBlock--
-	}
 
-	validationResults, err := validationService.ValidateFirstSwapsPerBlock(
-		ctx,
-		services.SwapValidationRequest{
-			PoolAddress: pool.PoolAddress,
-
-			FromBlock: blockLookback(
-				pool.BlockNumber,
-				config.LookbackBlocks,
-			),
-			ToBlock: validationToBlock,
-
-			PageSize:        20,
-			MaxSamples:      config.ValidationSamples,
-			BlockWindowSize: config.ValidationBlockWindowSize,
-		},
-	)
-	if err != nil {
-		slog.Warn(
-			"swap validation skipped",
-			"reason", err,
+	if validationToBlock <= 1 {
+		return fmt.Errorf(
+			"swap validation requires a pool block greater than one: %d",
+			validationToBlock,
 		)
-
-		return nil
 	}
 
-	for _, result := range validationResults {
+	validationFromBlock := blockLookback(
+		validationToBlock,
+		config.LookbackBlocks,
+	)
+
+	validationReport, err :=
+		validationService.ValidateCleanFirstSwapsPerBlock(
+			ctx,
+			services.SwapValidationRequest{
+				PoolAddress: pool.PoolAddress,
+
+				FromBlock: validationFromBlock,
+
+				ToBlock: validationToBlock,
+
+				PageSize: config.PageSize,
+
+				MaxSamples: config.ValidationSamples,
+
+				BlockWindowSize: config.ValidationBlockWindowSize,
+			},
+		)
+	if err != nil {
+		// Mechanical parity is now an integrity gate. Infrastructure,
+		// reconstruction or simulation errors must not be silently converted
+		// into a successful analyzer run.
+		return fmt.Errorf(
+			"run clean swap parity validation: %w",
+			err,
+		)
+	}
+
+	for _, skipped := range validationReport.Skipped {
+		slog.Info(
+			"swap validation candidate skipped",
+			"swap_id", skipped.SwapID,
+			"tx_hash", skipped.TxHash,
+			"block_number", skipped.BlockNumber,
+			"log_index", skipped.LogIndex,
+			"reason", string(skipped.Reason),
+			"detail", skipped.Detail,
+		)
+	}
+
+	for _, result := range validationReport.Results {
+		accountedInput :=
+			new(big.Int).Add(
+				new(big.Int).Set(
+					result.SimAmountInLessFeeRaw,
+				),
+				result.SimFeeAmountRaw,
+			)
+
 		slog.Info(
 			"swap validation result",
 			"swap_id", result.SwapID,
+			"tx_hash", result.TxHash,
 			"block_number", result.BlockNumber,
 			"log_index", result.LogIndex,
+			"snapshot_block", result.SnapshotBlock,
 			"zero_for_one", result.ZeroForOne,
-			"amount_in_raw", result.AmountInRaw.String(),
-			"actual_amount_out_raw", result.ActualAmountOutRaw.String(),
-			"sim_amount_out_raw", result.SimAmountOutRaw.String(),
-			"amount_out_abs_diff_raw", result.AmountOutAbsDiffRaw.String(),
-			"amount_out_diff_bps", result.AmountOutDiffBps.String(),
-			"actual_tick_after", result.ActualTickAfter,
-			"sim_tick_after", result.SimTickAfter,
-			"tick_delta", result.TickDelta,
+
+			"amount_in_raw",
+			result.AmountInRaw.String(),
+
+			"sim_amount_in_less_fee_raw",
+			result.SimAmountInLessFeeRaw.String(),
+
+			"sim_fee_amount_raw",
+			result.SimFeeAmountRaw.String(),
+
+			"sim_accounted_input_raw",
+			accountedInput.String(),
+
+			"fee_accounting_exact",
+			accountedInput.Cmp(
+				result.AmountInRaw,
+			) == 0,
+
+			"actual_amount_out_raw",
+			result.ActualAmountOutRaw.String(),
+
+			"sim_amount_out_raw",
+			result.SimAmountOutRaw.String(),
+
+			"amount_out_abs_diff_raw",
+			result.AmountOutAbsDiffRaw.String(),
+
+			"amount_out_diff_bps",
+			result.AmountOutDiffBps.String(),
+
+			"amount_out_exact",
+			result.AmountOutExact,
+
+			"actual_sqrt_price_x96_after",
+			result.ActualSqrtPriceX96After.String(),
+
+			"sim_sqrt_price_x96_after",
+			result.SimSqrtPriceX96After.String(),
+
+			"sqrt_price_abs_diff_raw",
+			result.SqrtPriceAbsDiffRaw.String(),
+
+			"sqrt_price_diff_bps",
+			result.SqrtPriceDiffBps.String(),
+
+			"sqrt_price_exact",
+			result.SqrtPriceExact,
+
+			"actual_tick_after",
+			result.ActualTickAfter,
+
+			"sim_tick_after",
+			result.SimTickAfter,
+
+			"tick_delta",
+			result.TickDelta,
+
+			"tick_exact",
+			result.TickExact,
+
+			"sim_swap_steps",
+			result.SimSwapSteps,
+
+			"sim_crossed_ticks",
+			result.SimCrossedTicks,
+
+			"exact_match",
+			result.ExactMatch,
 		)
 	}
 
-	if len(validationResults) == 0 {
-		slog.Warn(
-			"swap validation returned no samples",
-			"pool_address", pool.PoolAddress,
+	validationSummary, err :=
+		services.BuildSwapValidationSummary(
+			validationReport,
 		)
-
-		return nil
+	if err != nil {
+		return fmt.Errorf(
+			"build swap validation summary: %w",
+			err,
+		)
 	}
 
-	validationPath := filepath.Join(
+	validationBaseName := fmt.Sprintf(
+		"swap_validation_%s_%d_%d",
+		validationReport.PoolAddress,
+		validationReport.FromBlock,
+		validationReport.ToBlock,
+	)
+
+	validationResultsPath := filepath.Join(
 		outputDir,
-		fmt.Sprintf(
-			"swap_validation_%s_%d_%d.csv",
-			pool.PoolAddress,
-			validationResults[0].BlockNumber,
-			validationResults[len(validationResults)-1].BlockNumber,
-		),
+		validationBaseName+"_results.csv",
+	)
+
+	validationSkipsPath := filepath.Join(
+		outputDir,
+		validationBaseName+"_skips.csv",
+	)
+
+	validationSummaryPath := filepath.Join(
+		outputDir,
+		validationBaseName+"_summary.csv",
 	)
 
 	if err := services.WriteSwapValidationCSV(
-		validationPath,
-		validationResults,
+		validationResultsPath,
+		validationReport.Results,
 	); err != nil {
-		return err
+		return fmt.Errorf(
+			"write swap validation results: %w",
+			err,
+		)
+	}
+
+	if err := services.WriteSwapValidationSkipsCSV(
+		validationSkipsPath,
+		validationReport.Skipped,
+	); err != nil {
+		return fmt.Errorf(
+			"write swap validation skips: %w",
+			err,
+		)
+	}
+
+	if err := services.WriteSwapValidationSummaryCSV(
+		validationSummaryPath,
+		validationSummary,
+	); err != nil {
+		return fmt.Errorf(
+			"write swap validation summary: %w",
+			err,
+		)
+	}
+
+	if validationSummary.CleanSamples == 0 {
+		slog.Warn(
+			"swap validation found no clean samples",
+			"pool_address",
+			validationSummary.PoolAddress,
+
+			"candidate_blocks",
+			validationSummary.CandidateBlocks,
+
+			"skipped_samples",
+			validationSummary.SkippedSamples,
+
+			"incomplete_lp_index_skips",
+			validationSummary.IncompleteLPIndexSkips,
+
+			"prior_liquidity_action_skips",
+			validationSummary.PriorLiquidityActionSkips,
+		)
 	}
 
 	slog.Info(
-		"swap validation csv exported",
-		"path", validationPath,
-		"samples", len(validationResults),
+		"swap validation completed",
+		"pool_address",
+		validationSummary.PoolAddress,
+
+		"from_block",
+		validationSummary.FromBlock,
+
+		"to_block",
+		validationSummary.ToBlock,
+
+		"graph_indexed_through",
+		validationSummary.GraphIndexedThrough,
+
+		"scanned_windows",
+		validationSummary.ScannedWindows,
+
+		"candidate_blocks",
+		validationSummary.CandidateBlocks,
+
+		"clean_samples",
+		validationSummary.CleanSamples,
+
+		"skipped_samples",
+		validationSummary.SkippedSamples,
+
+		"clean_sample_percent",
+		validationSummary.CleanSamplePercent.String(),
+
+		"exact_matches",
+		validationSummary.ExactMatches,
+
+		"exact_match_percent",
+		validationSummary.ExactMatchPercent.String(),
+
+		"amount_out_exact_percent",
+		validationSummary.AmountOutExactPercent.String(),
+
+		"sqrt_price_exact_percent",
+		validationSummary.SqrtPriceExactPercent.String(),
+
+		"tick_exact_percent",
+		validationSummary.TickExactPercent.String(),
+
+		"mean_amount_out_diff_bps",
+		validationSummary.MeanAmountOutDiffBps.String(),
+
+		"max_amount_out_diff_bps",
+		validationSummary.MaxAmountOutDiffBps.String(),
+
+		"mean_sqrt_price_diff_bps",
+		validationSummary.MeanSqrtPriceDiffBps.String(),
+
+		"max_sqrt_price_diff_bps",
+		validationSummary.MaxSqrtPriceDiffBps.String(),
+
+		"total_swap_steps",
+		validationSummary.TotalSwapSteps,
+
+		"total_crossed_ticks",
+		validationSummary.TotalCrossedTicks,
+
+		"results_path",
+		validationResultsPath,
+
+		"skips_path",
+		validationSkipsPath,
+
+		"summary_path",
+		validationSummaryPath,
 	)
 
 	return nil
