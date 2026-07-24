@@ -963,9 +963,14 @@ func run() error {
 			MaxCandidates: config.BurnMaxCandidates,
 
 			MaxSamples: config.BurnMaxSamples,
+
+			Horizons: defaultBurnOutcomeHorizons(),
 		},
 	); err != nil {
-		return err
+		return fmt.Errorf(
+			"run burn event study: %w",
+			err,
+		)
 	}
 
 	return nil

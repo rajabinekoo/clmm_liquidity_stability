@@ -1,1 +1,0 @@
-event_id,pool_address,tx_hash,block_number,log_index,timestamp,tick_lower,tick_upper,liquidity_removed,reason,detail

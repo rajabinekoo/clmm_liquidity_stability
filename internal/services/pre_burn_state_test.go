@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -370,5 +371,218 @@ func preBurnReplayPool() *domain.ReconstructedPool {
 			-100,
 			100,
 		},
+	}
+}
+
+func TestReplayObservedSwapAcceptsExactOutputEvent(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	for _, zeroForOne := range []bool{
+		true,
+		false,
+	} {
+		zeroForOne := zeroForOne
+
+		t.Run(
+			fmt.Sprintf(
+				"zero_for_one_%t",
+				zeroForOne,
+			),
+			func(t *testing.T) {
+				t.Parallel()
+
+				pool := preBurnReplayPool()
+
+				simulator, err := uniswapv3.NewSimulator(500)
+				if err != nil {
+					t.Fatalf(
+						"NewSimulator() error = %v",
+						err,
+					)
+				}
+
+				exactOutput, err := simulator.SimulateExactOutput(
+					pool,
+					uniswapv3.ExactOutputRequest{
+						AmountOut: big.NewInt(1),
+
+						ZeroForOne: zeroForOne,
+					},
+				)
+				if err != nil {
+					t.Fatalf(
+						"SimulateExactOutput() error = %v",
+						err,
+					)
+				}
+
+				grossAsExactInput, err := simulator.SimulateExactInput(
+					pool,
+					uniswapv3.ExactInputRequest{
+						AmountIn: new(big.Int).Set(
+							exactOutput.AmountIn,
+						),
+
+						ZeroForOne: zeroForOne,
+					},
+				)
+				if err != nil {
+					t.Fatalf(
+						"SimulateExactInput() error = %v",
+						err,
+					)
+				}
+
+				if grossAsExactInput.SqrtPriceAfterX96.Cmp(
+					exactOutput.SqrtPriceAfterX96,
+				) == 0 {
+					t.Fatal(
+						"test fixture is not exact-output-specific",
+					)
+				}
+
+				swap := validPreBurnSwap(
+					101,
+					20,
+				)
+
+				if zeroForOne {
+					swap.Amount0Raw = new(big.Int).Set(
+						exactOutput.AmountIn,
+					)
+
+					swap.Amount1Raw = new(big.Int).Neg(
+						new(big.Int).Set(
+							exactOutput.AmountOut,
+						),
+					)
+				} else {
+					swap.Amount0Raw = new(big.Int).Neg(
+						new(big.Int).Set(
+							exactOutput.AmountOut,
+						),
+					)
+
+					swap.Amount1Raw = new(big.Int).Set(
+						exactOutput.AmountIn,
+					)
+				}
+
+				swap.SqrtPriceX96After = new(big.Int).Set(
+					exactOutput.SqrtPriceAfterX96,
+				)
+
+				swap.TickAfter = exactOutput.TickAfter
+
+				next, err := replayObservedSwap(
+					pool,
+					swap,
+					simulator,
+				)
+				if err != nil {
+					t.Fatalf(
+						"replayObservedSwap() error = %v",
+						err,
+					)
+				}
+
+				if next.SqrtPriceX96.Cmp(
+					exactOutput.SqrtPriceAfterX96,
+				) != 0 {
+					t.Fatalf(
+						"sqrt price = %s, want %s",
+						next.SqrtPriceX96,
+						exactOutput.SqrtPriceAfterX96,
+					)
+				}
+
+				if next.CurrentTick != exactOutput.TickAfter {
+					t.Fatalf(
+						"current tick = %d, want %d",
+						next.CurrentTick,
+						exactOutput.TickAfter,
+					)
+				}
+
+				if next.Liquidity.Cmp(
+					exactOutput.LiquidityAfter,
+				) != 0 {
+					t.Fatalf(
+						"liquidity = %s, want %s",
+						next.Liquidity,
+						exactOutput.LiquidityAfter,
+					)
+				}
+			},
+		)
+	}
+}
+
+func TestReplayObservedSwapRejectsStateThatMatchesNeitherMode(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	pool := preBurnReplayPool()
+
+	simulator, err := uniswapv3.NewSimulator(500)
+	if err != nil {
+		t.Fatalf(
+			"NewSimulator() error = %v",
+			err,
+		)
+	}
+
+	exactInput, err := simulator.SimulateExactInput(
+		pool,
+		uniswapv3.ExactInputRequest{
+			AmountIn: big.NewInt(1_000),
+
+			ZeroForOne: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf(
+			"SimulateExactInput() error = %v",
+			err,
+		)
+	}
+
+	swap := validPreBurnSwap(
+		101,
+		20,
+	)
+
+	swap.Amount0Raw =
+		big.NewInt(1_000)
+
+	swap.Amount1Raw =
+		new(big.Int).Neg(
+			new(big.Int).Set(
+				exactInput.AmountOut,
+			),
+		)
+
+	swap.SqrtPriceX96After =
+		new(big.Int).Add(
+			new(big.Int).Set(
+				exactInput.SqrtPriceAfterX96,
+			),
+			big.NewInt(1),
+		)
+
+	swap.TickAfter =
+		exactInput.TickAfter
+
+	if _, err := replayObservedSwap(
+		pool,
+		swap,
+		simulator,
+	); err == nil {
+		t.Fatal(
+			"replayObservedSwap() expected protocol-mode mismatch error",
+		)
 	}
 }

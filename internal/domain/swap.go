@@ -156,11 +156,13 @@ func (s SwapEvent) IsOneForZero() bool {
 		s.Amount0Raw.Sign() < 0
 }
 
-// AmountInRaw returns the gross token input represented by the Swap event.
+// AmountInRaw returns the observed positive pool delta for the input token.
 //
-// For Uniswap v3 this positive pool delta includes the fee paid to the pool,
-// so it is the correct gross input for an exact-input simulator with per-step
-// fee accounting.
+// The value includes swap fees. For an exact-input swap it is the consumed
+// gross input. For an exact-output swap it is the gross input calculated by
+// the protocol. The Swap event does not expose amountSpecified, so historical
+// replay must infer the protocol mode by exact matching rather than assuming
+// this value was the original exact-input request.
 func (s SwapEvent) AmountInRaw() *big.Int {
 	switch {
 	case s.IsZeroForOne():
@@ -207,11 +209,12 @@ func absBigInt(
 	)
 }
 
-// ValidateForSimulation checks whether the Swap contains an unambiguous
-// exact-input direction with strictly positive input and output amounts.
+// ValidateForSimulation checks whether the Swap has an unambiguous direction
+// and strictly positive observed input and output amounts.
 //
-// Validate permits a single zero token delta for structural ingestion, but
-// such an event cannot be replayed as an exact-input simulation sample.
+// The event is replayable as either exact-input or exact-output. The original
+// protocol mode is not encoded in the Swap event and must be inferred by exact
+// protocol matching.
 func (s SwapEvent) ValidateForSimulation() error {
 	if err := s.Validate(); err != nil {
 		return err
