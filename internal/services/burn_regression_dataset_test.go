@@ -15,6 +15,8 @@ type fakeBurnRealizedDatasetAnalyzer struct {
 	reports map[string]BurnRealizedOutcomeReport
 
 	calls int
+
+	requestedIndexedThrough []uint64
 }
 
 func (f *fakeBurnRealizedDatasetAnalyzer) Analyze(
@@ -22,6 +24,12 @@ func (f *fakeBurnRealizedDatasetAnalyzer) Analyze(
 	req BurnRealizedOutcomeRequest,
 ) (BurnRealizedOutcomeReport, error) {
 	f.calls++
+
+	f.requestedIndexedThrough =
+		append(
+			f.requestedIndexedThrough,
+			req.IndexedThrough,
+		)
 
 	report, exists :=
 		f.reports[req.Sample.Burn.EventKey()]
@@ -184,6 +192,31 @@ func TestBurnRealizedDatasetBuildsEventHorizonPairs(
 		t.Fatalf(
 			"analyzer calls = %d, want 2",
 			analyzer.calls,
+		)
+	}
+
+	if len(
+		analyzer.requestedIndexedThrough,
+	) != 2 {
+		t.Fatalf(
+			"indexed-through request count = %d, want 2",
+			len(
+				analyzer.requestedIndexedThrough,
+			),
+		)
+	}
+
+	if analyzer.requestedIndexedThrough[0] != 0 {
+		t.Fatalf(
+			"first requested indexed-through = %d, want 0",
+			analyzer.requestedIndexedThrough[0],
+		)
+	}
+
+	if analyzer.requestedIndexedThrough[1] != 1_000 {
+		t.Fatalf(
+			"second requested indexed-through = %d, want 1000",
+			analyzer.requestedIndexedThrough[1],
 		)
 	}
 

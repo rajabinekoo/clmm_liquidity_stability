@@ -86,6 +86,58 @@ func getNextSqrtPriceFromInput(
 	)
 }
 
+// getNextSqrtPriceFromOutput calculates the next square-root price after an
+// exact-output swap.
+//
+// The rounding direction follows Uniswap v3 and intentionally moves the price
+// far enough to deliver the requested output:
+//
+//   - zero-for-one removes token1;
+//   - one-for-zero removes token0.
+func getNextSqrtPriceFromOutput(
+	sqrtPX96 *big.Int,
+	liquidity *big.Int,
+	amountOut *big.Int,
+	zeroForOne bool,
+) (*big.Int, error) {
+	if err := validatePositiveUint160(
+		"sqrt price",
+		sqrtPX96,
+	); err != nil {
+		return nil, err
+	}
+
+	if err := validatePositiveUint128(
+		"liquidity",
+		liquidity,
+	); err != nil {
+		return nil, err
+	}
+
+	if err := validateUint256(
+		"amount out",
+		amountOut,
+	); err != nil {
+		return nil, err
+	}
+
+	if zeroForOne {
+		return getNextSqrtPriceFromAmount1RoundingDown(
+			sqrtPX96,
+			liquidity,
+			amountOut,
+			false,
+		)
+	}
+
+	return getNextSqrtPriceFromAmount0RoundingUp(
+		sqrtPX96,
+		liquidity,
+		amountOut,
+		false,
+	)
+}
+
 // getNextSqrtPriceFromAmount0RoundingUp calculates the next price after
 // adding or removing token0 from the pool's virtual reserves.
 //

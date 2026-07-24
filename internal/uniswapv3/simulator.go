@@ -493,6 +493,53 @@ func validateSimulationInput(
 	pool *domain.ReconstructedPool,
 	req ExactInputRequest,
 ) error {
+	if err := validateSimulationPool(pool); err != nil {
+		return err
+	}
+
+	if err := validateUint256(
+		"amount in",
+		req.AmountIn,
+	); err != nil {
+		return err
+	}
+
+	if req.AmountIn.Sign() == 0 {
+		return fmt.Errorf(
+			"amount in must be greater than zero",
+		)
+	}
+
+	return nil
+}
+
+func validateExactOutputSimulationInput(
+	pool *domain.ReconstructedPool,
+	req ExactOutputRequest,
+) error {
+	if err := validateSimulationPool(pool); err != nil {
+		return err
+	}
+
+	if err := validateUint256(
+		"amount out",
+		req.AmountOut,
+	); err != nil {
+		return err
+	}
+
+	if req.AmountOut.Sign() == 0 {
+		return fmt.Errorf(
+			"amount out must be greater than zero",
+		)
+	}
+
+	return nil
+}
+
+func validateSimulationPool(
+	pool *domain.ReconstructedPool,
+) error {
 	if pool == nil {
 		return fmt.Errorf(
 			"pool is nil",
@@ -532,19 +579,6 @@ func validateSimulationInput(
 		return err
 	}
 
-	if err := validateUint256(
-		"amount in",
-		req.AmountIn,
-	); err != nil {
-		return err
-	}
-
-	if req.AmountIn.Sign() == 0 {
-		return fmt.Errorf(
-			"amount in must be greater than zero",
-		)
-	}
-
 	if pool.Ticks == nil {
 		return fmt.Errorf(
 			"pool ticks map is nil",
@@ -557,8 +591,7 @@ func validateSimulationInput(
 		)
 	}
 
-	if len(pool.InitializedTicks) !=
-		len(pool.Ticks) {
+	if len(pool.InitializedTicks) != len(pool.Ticks) {
 		return fmt.Errorf(
 			"initialized tick count %d does not match ticks map count %d",
 			len(pool.InitializedTicks),
@@ -566,9 +599,7 @@ func validateSimulationInput(
 		)
 	}
 
-	reconstructedLiquidity :=
-		big.NewInt(0)
-
+	reconstructedLiquidity := big.NewInt(0)
 	previousTick := 0
 
 	for index, tickIndex := range pool.InitializedTicks {
@@ -594,9 +625,7 @@ func validateSimulationInput(
 
 		previousTick = tickIndex
 
-		tickState, exists :=
-			pool.Ticks[tickIndex]
-
+		tickState, exists := pool.Ticks[tickIndex]
 		if !exists {
 			return fmt.Errorf(
 				"initialized tick %d is missing from ticks map",

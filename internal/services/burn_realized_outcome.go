@@ -111,6 +111,14 @@ type BurnRealizedOutcomeRepository interface {
 type BurnRealizedOutcomeRequest struct {
 	Sample BurnEventSample
 
+	// IndexedThrough pins all outcome analyses belonging to one regression
+	// dataset to the same provider checkpoint.
+	//
+	// A zero value means that Analyze must resolve the provider's current
+	// indexed head. A non-zero value means that the supplied checkpoint must
+	// be used without reading a newer head.
+	IndexedThrough uint64
+
 	Horizons []BurnOutcomeHorizon
 
 	ZeroForOneAmountsIn []*big.Int
@@ -218,14 +226,37 @@ func (s *BurnRealizedOutcomeService) Analyze(
 		return BurnRealizedOutcomeReport{}, err
 	}
 
-	head, err :=
-		s.provider.IndexedHead(
-			ctx,
-		)
-	if err != nil {
+	indexedThrough :=
+		req.IndexedThrough
+
+	if indexedThrough == 0 {
+		head, err :=
+			s.provider.IndexedHead(
+				ctx,
+			)
+		if err != nil {
+			return BurnRealizedOutcomeReport{}, fmt.Errorf(
+				"analyze burn realized outcome: read indexed head: %w",
+				err,
+			)
+		}
+
+		indexedThrough =
+			head.BlockNumber
+	}
+
+	if indexedThrough == 0 {
 		return BurnRealizedOutcomeReport{}, fmt.Errorf(
-			"analyze burn realized outcome: read indexed head: %w",
-			err,
+			"analyze burn realized outcome: indexed-through checkpoint is zero",
+		)
+	}
+
+	if indexedThrough <
+		req.Sample.Burn.Cursor.BlockNumber {
+		return BurnRealizedOutcomeReport{}, fmt.Errorf(
+			"analyze burn realized outcome: indexed-through checkpoint %d is before burn block %d",
+			indexedThrough,
+			req.Sample.Burn.Cursor.BlockNumber,
 		)
 	}
 
@@ -235,7 +266,7 @@ func (s *BurnRealizedOutcomeService) Analyze(
 				req.Sample.Burn,
 			),
 
-			IndexedThrough: head.BlockNumber,
+			IndexedThrough: indexedThrough,
 
 			Outcomes: make(
 				[]BurnRealizedHorizonOutcome,
@@ -262,7 +293,7 @@ func (s *BurnRealizedOutcomeService) Analyze(
 				horizon.Blocks
 
 		if futureBlock >
-			head.BlockNumber {
+			indexedThrough {
 			report.Skipped =
 				append(
 					report.Skipped,
@@ -274,7 +305,7 @@ func (s *BurnRealizedOutcomeService) Analyze(
 						fmt.Sprintf(
 							"future block %d is after provider indexed head %d",
 							futureBlock,
-							head.BlockNumber,
+							indexedThrough,
 						),
 					),
 				)

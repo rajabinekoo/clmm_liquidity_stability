@@ -601,6 +601,9 @@ func (s *BurnRealizedDatasetService) Build(
 				BurnRealizedOutcomeRequest{
 					Sample: sample,
 
+					IndexedThrough: report.
+						OutcomeIndexedThrough,
+
 					Horizons: append(
 						[]BurnOutcomeHorizon(nil),
 						horizons...,

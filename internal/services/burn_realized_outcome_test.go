@@ -17,12 +17,15 @@ type fakeBurnRealizedOutcomeProvider struct {
 
 	snapshots map[uint64]domain.PoolSnapshot
 
+	headCalls     int
 	snapshotCalls int
 }
 
 func (f *fakeBurnRealizedOutcomeProvider) IndexedHead(
 	_ context.Context,
 ) (domain.IndexedHead, error) {
+	f.headCalls++
+
 	return f.head, nil
 }
 
@@ -596,4 +599,112 @@ func burnOutcomeReconstructionInput(
 	}
 
 	return input
+}
+
+func TestBurnRealizedOutcomeUsesPinnedIndexedThrough(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	sample, curveService :=
+		burnRealizedOutcomeFixture(
+			t,
+		)
+
+	futureBlock :=
+		sample.Burn.Cursor.BlockNumber +
+			10
+
+	pinnedIndexedThrough :=
+		futureBlock
+
+	provider :=
+		&fakeBurnRealizedOutcomeProvider{
+			// This deliberately differs from the pinned checkpoint.
+			// IndexedHead must not be called.
+			head: domain.IndexedHead{
+				BlockNumber: pinnedIndexedThrough + 1_000,
+			},
+
+			snapshots: map[uint64]domain.PoolSnapshot{
+				futureBlock: burnOutcomeSnapshot(
+					sample.Burn.PoolAddress,
+					futureBlock,
+					800_000_000_000,
+				),
+			},
+		}
+
+	repository :=
+		&fakeBurnRealizedOutcomeRepository{
+			inputs: map[uint64]domain.ReconstructionInput{
+				futureBlock: burnOutcomeReconstructionInput(
+					sample.Burn.PoolAddress,
+					futureBlock,
+					800_000_000_000,
+				),
+			},
+		}
+
+	service :=
+		NewBurnRealizedOutcomeService(
+			provider,
+			repository,
+			curveService,
+		)
+
+	report, err :=
+		service.Analyze(
+			context.Background(),
+			BurnRealizedOutcomeRequest{
+				Sample: sample,
+
+				IndexedThrough: pinnedIndexedThrough,
+
+				Horizons: []BurnOutcomeHorizon{
+					{
+						Label: "h10",
+
+						Blocks: 10,
+					},
+				},
+
+				ZeroForOneAmountsIn: burnImpactAmountGrid(),
+
+				OneForZeroAmountsIn: burnImpactAmountGrid(),
+
+				ThresholdsBps: burnOutcomeThresholds(),
+			},
+		)
+	if err != nil {
+		t.Fatalf(
+			"Analyze() error = %v",
+			err,
+		)
+	}
+
+	if provider.headCalls != 0 {
+		t.Fatalf(
+			"IndexedHead() calls = %d, want 0 for pinned checkpoint",
+			provider.headCalls,
+		)
+	}
+
+	if report.IndexedThrough !=
+		pinnedIndexedThrough {
+		t.Fatalf(
+			"report indexed-through = %d, want %d",
+			report.IndexedThrough,
+			pinnedIndexedThrough,
+		)
+	}
+
+	if len(report.Outcomes) != 1 ||
+		len(report.Skipped) != 0 {
+		t.Fatalf(
+			"outcomes=%d skipped=%d, want 1 and 0",
+			len(report.Outcomes),
+			len(report.Skipped),
+		)
+	}
 }
