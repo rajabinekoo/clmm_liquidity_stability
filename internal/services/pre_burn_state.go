@@ -64,6 +64,8 @@ type PreBurnStateResult struct {
 	PriorSwapEvents      int
 	ReplayedEvents       int
 
+	SwapReplays []BurnSwapReplayAudit
+
 	LastReplayedCursor *domain.EventCursor
 
 	BurnRangeActive bool
@@ -290,7 +292,10 @@ func (s *PreBurnStateService) Build(
 		)
 	}
 
-	replayedPool, lastCursor, err :=
+	replayedPool,
+		lastCursor,
+		swapReplays,
+		err :=
 		replayPoolBlockEvents(
 			pool,
 			events,
@@ -336,6 +341,10 @@ func (s *PreBurnStateService) Build(
 		PriorSwapEvents: len(swaps),
 
 		ReplayedEvents: len(events),
+
+		SwapReplays: cloneBurnSwapReplayAudits(
+			swapReplays,
+		),
 
 		LastReplayedCursor: lastCursor,
 
@@ -547,16 +556,17 @@ func replayPoolBlockEvents(
 ) (
 	*domain.ReconstructedPool,
 	*domain.EventCursor,
+	[]BurnSwapReplayAudit,
 	error,
 ) {
 	if initialPool == nil {
-		return nil, nil, fmt.Errorf(
+		return nil, nil, nil, fmt.Errorf(
 			"initial pool is nil",
 		)
 	}
 
 	if simulator == nil {
-		return nil, nil, fmt.Errorf(
+		return nil, nil, nil, fmt.Errorf(
 			"simulator is nil",
 		)
 	}
@@ -566,9 +576,14 @@ func replayPoolBlockEvents(
 
 	var lastCursor *domain.EventCursor
 
+	swapReplays := make(
+		[]BurnSwapReplayAudit,
+		0,
+	)
+
 	for index, event := range events {
 		if err := event.Validate(); err != nil {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"event %d validation: %w",
 				index,
 				err,
@@ -579,7 +594,7 @@ func replayPoolBlockEvents(
 			!lastCursor.Before(
 				event.Cursor,
 			) {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"event ordering is not strictly increasing: previous=%s current=%s",
 				lastCursor,
 				event.Cursor,
@@ -595,7 +610,7 @@ func replayPoolBlockEvents(
 					*event.LiquidityChange,
 				)
 			if err != nil {
-				return nil, nil, fmt.Errorf(
+				return nil, nil, nil, fmt.Errorf(
 					"apply %s event at %s: %w",
 					event.Type,
 					event.Cursor,
@@ -607,13 +622,16 @@ func replayPoolBlockEvents(
 				next
 
 		case domain.PoolBlockEventSwap:
-			next, err := replayObservedSwap(
-				current,
-				*event.Swap,
-				simulator,
-			)
+			next,
+				replayAudit,
+				err :=
+				replayObservedSwap(
+					current,
+					*event.Swap,
+					simulator,
+				)
 			if err != nil {
-				return nil, nil, fmt.Errorf(
+				return nil, nil, nil, fmt.Errorf(
 					"replay swap %s at %s: %w",
 					event.Swap.ID,
 					event.Cursor,
@@ -621,10 +639,17 @@ func replayPoolBlockEvents(
 				)
 			}
 
-			current = next
+			current =
+				next
+
+			swapReplays =
+				append(
+					swapReplays,
+					replayAudit,
+				)
 
 		default:
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"unsupported event type %s",
 				event.Type,
 			)
@@ -637,7 +662,10 @@ func replayPoolBlockEvents(
 			&cursorCopy
 	}
 
-	return current, lastCursor, nil
+	return current,
+		lastCursor,
+		swapReplays,
+		nil
 }
 
 type observedSwapReplayMode string
@@ -670,34 +698,47 @@ func replayObservedSwap(
 	current *domain.ReconstructedPool,
 	swap domain.SwapEvent,
 	simulator *uniswapv3.Simulator,
-) (*domain.ReconstructedPool, error) {
+) (
+	*domain.ReconstructedPool,
+	BurnSwapReplayAudit,
+	error,
+) {
 	if current == nil {
-		return nil, fmt.Errorf(
-			"current pool is nil",
-		)
+		return nil,
+			BurnSwapReplayAudit{},
+			fmt.Errorf(
+				"current pool is nil",
+			)
 	}
 
 	if simulator == nil {
-		return nil, fmt.Errorf(
-			"simulator is nil",
-		)
+		return nil,
+			BurnSwapReplayAudit{},
+			fmt.Errorf(
+				"simulator is nil",
+			)
 	}
 
-	if err := swap.ValidateForSimulation(); err != nil {
-		return nil, fmt.Errorf(
-			"invalid observed swap: %w",
-			err,
-		)
+	if err :=
+		swap.ValidateForSimulation(); err != nil {
+		return nil,
+			BurnSwapReplayAudit{},
+			fmt.Errorf(
+				"invalid observed swap: %w",
+				err,
+			)
 	}
 
-	exactInput, exactInputErr :=
+	exactInput,
+		exactInputErr :=
 		simulateObservedSwapAsExactInput(
 			current,
 			swap,
 			simulator,
 		)
 
-	exactOutput, exactOutputErr :=
+	exactOutput,
+		exactOutputErr :=
 		simulateObservedSwapAsExactOutput(
 			current,
 			swap,
@@ -720,22 +761,25 @@ func replayObservedSwap(
 
 	if !exactInputMatches &&
 		!exactOutputMatches {
-		return nil, fmt.Errorf(
-			"observed swap matches neither protocol mode: exact_input={%s} exact_output={%s}",
-			describeObservedSwapSimulation(
-				exactInput,
-				exactInputErr,
-				swap,
-			),
-			describeObservedSwapSimulation(
-				exactOutput,
-				exactOutputErr,
-				swap,
-			),
-		)
+		return nil,
+			BurnSwapReplayAudit{},
+			fmt.Errorf(
+				"observed swap matches neither protocol mode: exact_input={%s} exact_output={%s}",
+				describeObservedSwapSimulation(
+					exactInput,
+					exactInputErr,
+					swap,
+				),
+				describeObservedSwapSimulation(
+					exactOutput,
+					exactOutputErr,
+					swap,
+				),
+			)
 	}
 
-	selected := exactInput
+	selected :=
+		exactInput
 
 	if exactInputMatches &&
 		exactOutputMatches {
@@ -743,28 +787,32 @@ func replayObservedSwap(
 			exactInput,
 			exactOutput,
 		) {
-			return nil, fmt.Errorf(
-				"exact-input and exact-output replay both match observed amounts but disagree on final state: exact_input={%s} exact_output={%s}",
-				describeObservedSwapSimulation(
-					exactInput,
-					nil,
-					swap,
-				),
-				describeObservedSwapSimulation(
-					exactOutput,
-					nil,
-					swap,
-				),
-			)
+			return nil,
+				BurnSwapReplayAudit{},
+				fmt.Errorf(
+					"exact-input and exact-output replay both match observed amounts but disagree on final state: exact_input={%s} exact_output={%s}",
+					describeObservedSwapSimulation(
+						exactInput,
+						nil,
+						swap,
+					),
+					describeObservedSwapSimulation(
+						exactOutput,
+						nil,
+						swap,
+					),
+				)
 		}
 
 		selected.Mode =
 			observedSwapReplayBoth
 	} else if exactOutputMatches {
-		selected = exactOutput
+		selected =
+			exactOutput
 	}
 
-	next := *current
+	next :=
+		*current
 
 	next.SqrtPriceX96 =
 		new(big.Int).Set(
@@ -779,7 +827,50 @@ func replayObservedSwap(
 			selected.LiquidityAfter,
 		)
 
-	return &next, nil
+	audit :=
+		BurnSwapReplayAudit{
+			SwapID: swap.ID,
+			TxHash: swap.TxHash,
+
+			Cursor: swap.Cursor(),
+
+			ZeroForOne: swap.IsZeroForOne(),
+
+			Mode: SwapReplayMode(
+				selected.Mode,
+			),
+
+			AmountInRaw: cloneBigInt(
+				swap.AmountInRaw(),
+			),
+
+			AmountOutRaw: cloneBigInt(
+				swap.AmountOutRaw(),
+			),
+
+			SqrtPriceX96After: cloneBigInt(
+				swap.SqrtPriceX96After,
+			),
+
+			TickAfter: swap.TickAfter,
+
+			SwapSteps: selected.SwapSteps,
+
+			CrossedTicks: selected.CrossedTicks,
+		}
+
+	if err := audit.Validate(); err != nil {
+		return nil,
+			BurnSwapReplayAudit{},
+			fmt.Errorf(
+				"build replay audit: %w",
+				err,
+			)
+	}
+
+	return &next,
+		audit,
+		nil
 }
 
 func simulateObservedSwapAsExactInput(

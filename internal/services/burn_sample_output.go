@@ -1555,3 +1555,162 @@ func burnOptionalCursorFields(
 			cursor.LogIndex,
 		)
 }
+
+func WriteBurnSwapReplayAuditCSV(
+	path string,
+	samples []BurnEventSample,
+) error {
+	header :=
+		[]string{
+			"burn_event_id",
+			"burn_event_key",
+			"pool_address",
+			"burn_block_number",
+			"burn_log_index",
+
+			"swap_id",
+			"swap_tx_hash",
+			"swap_block_number",
+			"swap_log_index",
+
+			"zero_for_one",
+			"replay_mode",
+
+			"amount_in_raw",
+			"amount_out_raw",
+
+			"sqrt_price_x96_after",
+			"tick_after",
+
+			"swap_steps",
+			"crossed_ticks",
+		}
+
+	rowCount := 0
+
+	for _, sample := range samples {
+		rowCount +=
+			len(sample.SwapReplays)
+	}
+
+	rows := make(
+		[][]string,
+		0,
+		rowCount,
+	)
+
+	for sampleIndex, sample := range samples {
+		if err := sample.Validate(); err != nil {
+			return fmt.Errorf(
+				"write burn swap replay audit CSV: sample %d: %w",
+				sampleIndex,
+				err,
+			)
+		}
+
+		for replayIndex, replay := range sample.SwapReplays {
+			if err := replay.Validate(); err != nil {
+				return fmt.Errorf(
+					"write burn swap replay audit CSV: sample=%d replay=%d: %w",
+					sampleIndex,
+					replayIndex,
+					err,
+				)
+			}
+
+			rows =
+				append(
+					rows,
+					[]string{
+						sample.Burn.ID,
+
+						sample.Burn.EventKey(),
+
+						normalizeAddress(
+							sample.Burn.PoolAddress,
+						),
+
+						strconv.FormatUint(
+							sample.
+								Burn.
+								Cursor.
+								BlockNumber,
+							10,
+						),
+
+						strconv.Itoa(
+							sample.
+								Burn.
+								Cursor.
+								LogIndex,
+						),
+
+						replay.SwapID,
+
+						strings.ToLower(
+							strings.TrimSpace(
+								replay.TxHash,
+							),
+						),
+
+						strconv.FormatUint(
+							replay.
+								Cursor.
+								BlockNumber,
+							10,
+						),
+
+						strconv.Itoa(
+							replay.
+								Cursor.
+								LogIndex,
+						),
+
+						strconv.FormatBool(
+							replay.ZeroForOne,
+						),
+
+						string(replay.Mode),
+
+						replay.
+							AmountInRaw.
+							String(),
+
+						replay.
+							AmountOutRaw.
+							String(),
+
+						replay.
+							SqrtPriceX96After.
+							String(),
+
+						strconv.Itoa(
+							replay.TickAfter,
+						),
+
+						strconv.Itoa(
+							replay.SwapSteps,
+						),
+
+						strconv.Itoa(
+							replay.CrossedTicks,
+						),
+					},
+				)
+		}
+	}
+
+	if err :=
+		writeCSVAtomically(
+			path,
+			header,
+			rows,
+		); err != nil {
+		return fmt.Errorf(
+			"write burn swap replay audit CSV: %w",
+			err,
+		)
+	}
+
+	return nil
+}

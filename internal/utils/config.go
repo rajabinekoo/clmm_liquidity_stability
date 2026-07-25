@@ -37,10 +37,11 @@ type Config struct {
 	PollInterval      time.Duration `env:"POLL_INTERVAL" envDefault:"5s"`
 	TheGraphTimeout   time.Duration `env:"THE_GRAPH_TIMEOUT" envDefault:"2m"`
 
-	LookbackBlocks uint64 `env:"LOOKBACK_BLOCKS" envDefault:"300000"`
-	StepBlocks     uint64 `env:"STEP_BLOCKS" envDefault:"10000"`
-	MaxSnapshots   int    `env:"MAX_SNAPSHOTS" envDefault:"30"`
-	PositionLimit  int    `env:"POSITION_LIMIT" envDefault:"20"`
+	LookbackBlocks      uint64 `env:"LOOKBACK_BLOCKS" envDefault:"300000"`
+	StepBlocks          uint64 `env:"STEP_BLOCKS" envDefault:"10000"`
+	MaxSnapshots        int    `env:"MAX_SNAPSHOTS" envDefault:"30"`
+	PositionLimit       int    `env:"POSITION_LIMIT" envDefault:"20"`
+	PositionCoverageBps int64  `env:"POSITION_COVERAGE_BPS" envDefault:"9500"`
 
 	ValidationSamples         int    `env:"VALIDATION_SAMPLES" envDefault:"30"`
 	ValidationBlockWindowSize uint64 `env:"VALIDATION_BLOCK_WINDOW_SIZE" envDefault:"8"`
@@ -71,10 +72,11 @@ type ExportedPoolConfig struct {
 	PageSize          int    `json:"page_size"`
 	ConfirmationDepth uint64 `json:"confirmation_depth"`
 
-	LookbackBlocks uint64 `json:"lookback_blocks"`
-	StepBlocks     uint64 `json:"step_blocks"`
-	MaxSnapshots   int    `json:"max_snapshots"`
-	PositionLimit  int    `json:"position_limit"`
+	LookbackBlocks      uint64 `json:"lookback_blocks"`
+	StepBlocks          uint64 `json:"step_blocks"`
+	MaxSnapshots        int    `json:"max_snapshots"`
+	PositionLimit       int    `json:"position_limit"`
+	PositionCoverageBps int64  `json:"position_coverage_bps"`
 
 	ValidationSamples         int    `json:"validation_samples"`
 	ValidationBlockWindowSize uint64 `json:"validation_block_window_size"`
@@ -197,6 +199,13 @@ func (c Config) Validate() error {
 		)
 	}
 
+	if c.PositionCoverageBps < 1 ||
+		c.PositionCoverageBps > 10_000 {
+		return fmt.Errorf(
+			"config: POSITION_COVERAGE_BPS must be between 1 and 10000",
+		)
+	}
+
 	if c.ValidationSamples <= 0 {
 		return fmt.Errorf(
 			"config: VALIDATION_SAMPLES must be greater than zero",
@@ -316,6 +325,8 @@ func WritePoolConfigJSON(
 		BurnSamplingBins: cfg.BurnSamplingBins,
 
 		BurnSamplingSeed: cfg.BurnSamplingSeed,
+
+		PositionCoverageBps: cfg.PositionCoverageBps,
 	}
 
 	if dir := filepath.Dir(path); dir != "." {

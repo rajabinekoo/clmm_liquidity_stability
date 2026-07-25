@@ -47,6 +47,8 @@ type SnapshotBatchRequest struct {
 	ZeroForOneAmountsIn []*big.Int
 	PositionLimit       int
 	ThresholdsBps       []decimal.Decimal
+
+	PositionCoverageBps int64
 }
 
 type SnapshotBatchResult struct {
@@ -75,6 +77,11 @@ type SnapshotBatchResult struct {
 	TopMaxDirectionalBps decimal.Decimal
 
 	SumTotalLSISBps decimal.Decimal
+
+	LoadedPositionCount int
+
+	PositionCoverageTargetBps   int64
+	PositionCoverageAchievedBps decimal.Decimal
 }
 
 type SnapshotBatchDetailedResult struct {
@@ -104,6 +111,19 @@ func (s *SnapshotBatchAnalysisService) Analyze(
 	}
 	if req.PositionLimit <= 0 {
 		req.PositionLimit = 10
+	}
+	if req.PositionCoverageBps == 0 {
+		req.PositionCoverageBps =
+			defaultPositionCoverageBps
+	}
+	if req.PositionCoverageBps < 1 ||
+		req.PositionCoverageBps >
+			positionCoverageDenominator {
+		return nil, fmt.Errorf(
+			"snapshot batch analysis: position coverage bps %d must be inside [1,%d]",
+			req.PositionCoverageBps,
+			positionCoverageDenominator,
+		)
 	}
 	if len(req.ZeroForOneAmountsIn) == 0 {
 		return nil, fmt.Errorf("snapshot batch analysis: zero_for_one amounts are required")
@@ -196,6 +216,7 @@ func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
 			OneForZeroAmountsIn: oneForZeroAmountsIn,
 			PositionLimit:       req.PositionLimit,
 			ThresholdsBps:       req.ThresholdsBps,
+			PositionCoverageBps: req.PositionCoverageBps,
 		},
 	)
 	if err != nil {
@@ -229,7 +250,19 @@ func summarizeSnapshotBatchResult(
 
 		ActiveLiquidity: pool.Liquidity.String(),
 
+		LoadedPositionCount: report.
+			ZeroForOneReport.
+			LoadedPositionCount,
+
 		PositionCount: len(report.Positions),
+
+		PositionCoverageTargetBps: report.
+			ZeroForOneReport.
+			PositionCoverageTargetBps,
+
+		PositionCoverageAchievedBps: report.
+			ZeroForOneReport.
+			PositionCoverageAchievedBps,
 
 		ZeroForOneBaseAUCBps: report.ZeroForOneReport.BaseSummary.PriceImpactAUCBps,
 		OneForZeroBaseAUCBps: report.OneForZeroReport.BaseSummary.PriceImpactAUCBps,
@@ -381,6 +414,12 @@ func snapshotBatchCSVHeader() []string {
 		"top_max_directional_lsis_bps",
 
 		"sum_total_lsis_bps",
+
+		"loaded_position_count",
+		"selected_position_count",
+
+		"position_coverage_target_bps",
+		"position_coverage_achieved_bps",
 	}
 }
 
@@ -409,5 +448,22 @@ func snapshotBatchCSVRow(
 		result.TopMaxDirectionalBps.String(),
 
 		result.SumTotalLSISBps.String(),
+
+		strconv.Itoa(
+			result.LoadedPositionCount,
+		),
+
+		strconv.Itoa(
+			result.PositionCount,
+		),
+
+		strconv.FormatInt(
+			result.PositionCoverageTargetBps,
+			10,
+		),
+
+		result.
+			PositionCoverageAchievedBps.
+			String(),
 	}
 }

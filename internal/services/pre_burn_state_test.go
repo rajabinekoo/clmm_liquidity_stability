@@ -229,7 +229,10 @@ func TestReplayPoolBlockEventsReplaysMintAndSwapExactly(
 		)
 	}
 
-	result, lastCursor, err :=
+	result,
+		lastCursor,
+		swapReplays,
+		err :=
 		replayPoolBlockEvents(
 			pool,
 			events,
@@ -239,6 +242,13 @@ func TestReplayPoolBlockEventsReplaysMintAndSwapExactly(
 		t.Fatalf(
 			"replayPoolBlockEvents() error = %v",
 			err,
+		)
+	}
+
+	if len(swapReplays) != 1 {
+		t.Fatalf(
+			"swap replay audit count = %d, want 1",
+			len(swapReplays),
 		)
 	}
 
@@ -476,7 +486,7 @@ func TestReplayObservedSwapAcceptsExactOutputEvent(
 
 				swap.TickAfter = exactOutput.TickAfter
 
-				next, err := replayObservedSwap(
+				next, audit, err := replayObservedSwap(
 					pool,
 					swap,
 					simulator,
@@ -485,6 +495,33 @@ func TestReplayObservedSwapAcceptsExactOutputEvent(
 					t.Fatalf(
 						"replayObservedSwap() error = %v",
 						err,
+					)
+				}
+
+				if audit.Mode !=
+					SwapReplayModeExactOutput {
+					t.Fatalf(
+						"replay mode = %q, want %q",
+						audit.Mode,
+						SwapReplayModeExactOutput,
+					)
+				}
+
+				if audit.SwapSteps !=
+					exactOutput.SwapSteps {
+					t.Fatalf(
+						"swap steps = %d, want %d",
+						audit.SwapSteps,
+						exactOutput.SwapSteps,
+					)
+				}
+
+				if audit.CrossedTicks !=
+					exactOutput.CrossedTicks {
+					t.Fatalf(
+						"crossed ticks = %d, want %d",
+						audit.CrossedTicks,
+						exactOutput.CrossedTicks,
 					)
 				}
 
@@ -576,7 +613,7 @@ func TestReplayObservedSwapRejectsStateThatMatchesNeitherMode(
 	swap.TickAfter =
 		exactInput.TickAfter
 
-	if _, err := replayObservedSwap(
+	if _, _, err := replayObservedSwap(
 		pool,
 		swap,
 		simulator,

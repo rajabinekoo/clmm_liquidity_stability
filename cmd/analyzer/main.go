@@ -263,11 +263,12 @@ func run() error {
 	impactReport, err := impactService.AnalyzeActivePositions(
 		ctx,
 		services.LiquidityImpactRequest{
-			Pool:          pool,
-			AmountsIn:     curveAmounts,
-			ZeroForOne:    true,
-			PositionLimit: config.PositionLimit,
-			ThresholdsBps: thresholdsBps,
+			Pool:                pool,
+			AmountsIn:           curveAmounts,
+			ZeroForOne:          true,
+			PositionLimit:       config.PositionLimit,
+			ThresholdsBps:       thresholdsBps,
+			PositionCoverageBps: config.PositionCoverageBps,
 		},
 	)
 	if err != nil {
@@ -327,6 +328,7 @@ func run() error {
 			OneForZeroAmountsIn: token1Amounts,
 			PositionLimit:       config.PositionLimit,
 			ThresholdsBps:       thresholdsBps,
+			PositionCoverageBps: config.PositionCoverageBps,
 		},
 	)
 	if err != nil {
@@ -446,6 +448,7 @@ func run() error {
 			ZeroForOneAmountsIn: curveAmounts,
 			PositionLimit:       config.PositionLimit,
 			ThresholdsBps:       thresholdsBps,
+			PositionCoverageBps: config.PositionCoverageBps,
 		},
 	)
 	if err != nil {

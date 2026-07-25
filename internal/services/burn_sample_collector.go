@@ -51,6 +51,8 @@ type BurnEventSample struct {
 	PriorSwapEvents      int
 	ReplayedEvents       int
 
+	SwapReplays []BurnSwapReplayAudit
+
 	LastReplayedCursor *domain.EventCursor
 
 	CurrentTick int
@@ -138,6 +140,56 @@ func (s BurnEventSample) Validate() error {
 			s.ReplayedEvents,
 			expectedReplayedEvents,
 		)
+	}
+
+	if s.SwapReplays != nil {
+		if len(s.SwapReplays) !=
+			s.PriorSwapEvents {
+			return fmt.Errorf(
+				"burn event sample: swap replay audits=%d, prior swaps=%d",
+				len(s.SwapReplays),
+				s.PriorSwapEvents,
+			)
+		}
+
+		var previousCursor *domain.EventCursor
+
+		for index, replay := range s.SwapReplays {
+			if err := replay.Validate(); err != nil {
+				return fmt.Errorf(
+					"burn event sample: swap replay audit %d: %w",
+					index,
+					err,
+				)
+			}
+
+			if !replay.Cursor.Before(
+				s.Burn.Cursor,
+			) {
+				return fmt.Errorf(
+					"burn event sample: swap replay cursor %s is not before burn %s",
+					replay.Cursor,
+					s.Burn.Cursor,
+				)
+			}
+
+			if previousCursor != nil &&
+				!previousCursor.Before(
+					replay.Cursor,
+				) {
+				return fmt.Errorf(
+					"burn event sample: swap replay ordering is not strictly increasing: previous=%s current=%s",
+					previousCursor,
+					replay.Cursor,
+				)
+			}
+
+			cursorCopy :=
+				replay.Cursor
+
+			previousCursor =
+				&cursorCopy
+		}
 	}
 
 	if s.LastReplayedCursor != nil {
@@ -1547,6 +1599,10 @@ func newBurnEventSample(
 			PriorSwapEvents: preBurn.PriorSwapEvents,
 
 			ReplayedEvents: preBurn.ReplayedEvents,
+
+			SwapReplays: cloneBurnSwapReplayAudits(
+				preBurn.SwapReplays,
+			),
 
 			LastReplayedCursor: cloneEventCursorPointer(
 				preBurn.

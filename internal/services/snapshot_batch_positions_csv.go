@@ -101,6 +101,11 @@ func snapshotBatchPositionsHeader(
 		"one_for_zero_lsis_bps",
 		"total_lsis_bps",
 		"max_directional_lsis_bps",
+
+		"loaded_position_count",
+		"selected_position_count",
+		"position_coverage_target_bps",
+		"position_coverage_achieved_bps",
 	}
 
 	for _, threshold := range thresholds {
@@ -164,6 +169,30 @@ func snapshotBatchPositionRow(
 		impact.OneForZeroLSISBps.String(),
 		impact.TotalLSISBps.String(),
 		impact.MaxDirectionalLSISBps.String(),
+
+		strconv.Itoa(
+			result.
+				Summary.
+				LoadedPositionCount,
+		),
+
+		strconv.Itoa(
+			result.
+				Summary.
+				PositionCount,
+		),
+
+		strconv.FormatInt(
+			result.
+				Summary.
+				PositionCoverageTargetBps,
+			10,
+		),
+
+		result.
+			Summary.
+			PositionCoverageAchievedBps.
+			String(),
 	}
 
 	for _, threshold := range thresholds {
