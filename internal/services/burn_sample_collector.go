@@ -654,6 +654,15 @@ type BurnSampleCollectionRequest struct {
 	MaxCandidates int
 	MaxSamples    int
 
+	// SamplingBins enables deterministic block-stratified sampling.
+	//
+	// A zero value preserves chronological candidate ordering.
+	// Production studies should use a positive value.
+	SamplingBins int
+
+	// SamplingSeed makes the candidate selection reproducible.
+	SamplingSeed uint64
+
 	ZeroForOneAmountsIn []*big.Int
 	OneForZeroAmountsIn []*big.Int
 
@@ -670,10 +679,25 @@ type BurnSampleCollectionReport struct {
 
 	Pages int
 
+	// DiscoveredCandidates is the complete candidate universe found in the
+	// requested block interval before expensive pre-burn reconstruction.
+	DiscoveredCandidates int
+
+	// CandidateEvents is the number of candidates actually attempted after
+	// deterministic sampling.
+	//
+	// CandidateEvents = AnalyzedEvents + SkippedEvents.
 	CandidateEvents int
 	AnalyzedEvents  int
 	SkippedEvents   int
 
+	SamplingBins         int
+	NonEmptySamplingBins int
+
+	// Truncated means the successful sample target was reached before every
+	// discovered candidate had to be attempted.
+	//
+	// Candidate discovery itself is never silently truncated.
 	Truncated bool
 
 	LastProcessedCursor *domain.EventCursor
@@ -760,6 +784,37 @@ func (s *BurnSampleCollector) Collect(
 		return BurnSampleCollectionReport{}, err
 	}
 
+	// Phase 1: load the complete cheap candidate universe.
+	discovery, err :=
+		s.discoverBurnCandidates(
+			ctx,
+			normalizedRequest,
+		)
+	if err != nil {
+		return BurnSampleCollectionReport{}, fmt.Errorf(
+			"collect burn samples: %w",
+			err,
+		)
+	}
+
+	// Phase 2: generate a deterministic time-stratified order.
+	candidateOrder,
+		samplingDiagnostics,
+		err :=
+		buildBurnCandidateSamplingOrder(
+			discovery.Candidates,
+			normalizedRequest.FromBlock,
+			normalizedRequest.ToBlock,
+			normalizedRequest.SamplingBins,
+			normalizedRequest.SamplingSeed,
+		)
+	if err != nil {
+		return BurnSampleCollectionReport{}, fmt.Errorf(
+			"collect burn samples: build sampling order: %w",
+			err,
+		)
+	}
+
 	report :=
 		BurnSampleCollectionReport{
 			PoolAddress: normalizedRequest.
@@ -770,6 +825,21 @@ func (s *BurnSampleCollector) Collect(
 
 			ToBlock: normalizedRequest.
 				ToBlock,
+
+			IndexedThrough: discovery.
+				IndexedThrough,
+
+			Pages: discovery.Pages,
+
+			DiscoveredCandidates: len(
+				discovery.Candidates,
+			),
+
+			SamplingBins: samplingDiagnostics.
+				BinCount,
+
+			NonEmptySamplingBins: samplingDiagnostics.
+				NonEmptyBinCount,
 
 			Samples: make(
 				[]BurnEventSample,
@@ -784,316 +854,188 @@ func (s *BurnSampleCollector) Collect(
 			),
 		}
 
-	var (
-		after         *domain.EventCursor
-		previousEvent *domain.EventCursor
-	)
-
-	for {
+	// Phase 3: perform expensive pre-burn reconstruction only for candidates
+	// selected by the stratified order.
+	//
+	// Deterministic skips do not consume the successful sample quota.
+	for _, candidate := range candidateOrder {
 		if err := ctx.Err(); err != nil {
 			return BurnSampleCollectionReport{}, err
 		}
 
-		remainingCandidates :=
-			normalizedRequest.
-				MaxCandidates -
-				report.CandidateEvents
-
-		if remainingCandidates <= 0 {
-			report.Truncated = true
+		if report.AnalyzedEvents >=
+			normalizedRequest.MaxSamples {
 			break
 		}
 
-		pageLimit :=
-			normalizedRequest.
-				PageSize
+		report.CandidateEvents++
 
-		if remainingCandidates <
-			pageLimit {
-			pageLimit =
-				remainingCandidates
-		}
+		report.LastProcessedCursor =
+			laterBurnCursor(
+				report.LastProcessedCursor,
+				candidate.Cursor,
+			)
 
-		page, err :=
-			s.candidateRepository.
-				LoadBurnCandidatesPage(
-					ctx,
-					repositories.
-						BurnCandidatePageRequest{
-						PoolAddress: normalizedRequest.
-							PoolAddress,
-
-						FromBlock: normalizedRequest.
-							FromBlock,
-
-						ToBlock: normalizedRequest.
-							ToBlock,
-
-						After: after,
-
-						Limit: pageLimit,
-					},
-				)
+		sample, skipped, err :=
+			s.analyzeBurnCandidate(
+				ctx,
+				normalizedRequest,
+				candidate,
+			)
 		if err != nil {
 			return BurnSampleCollectionReport{}, fmt.Errorf(
-				"collect burn samples: load candidate page: %w",
+				"collect burn samples: candidate %s: %w",
+				candidate.EventKey(),
 				err,
 			)
 		}
 
-		if err :=
-			validateBurnCandidatePage(
-				page,
-				normalizedRequest,
-			); err != nil {
-			return BurnSampleCollectionReport{}, fmt.Errorf(
-				"collect burn samples: invalid candidate page: %w",
-				err,
-			)
-		}
-
-		if err :=
-			validateBurnCandidatePageOrdering(
-				page.Candidates,
-				normalizedRequest,
-				previousEvent,
-			); err != nil {
-			return BurnSampleCollectionReport{}, fmt.Errorf(
-				"collect burn samples: invalid candidate ordering on page %d: %w",
-				report.Pages+1,
-				err,
-			)
-		}
-
-		report.Pages++
-
-		if report.Pages == 1 {
-			report.IndexedThrough =
-				page.IndexedThrough
-		} else if page.IndexedThrough !=
-			report.IndexedThrough {
-			return BurnSampleCollectionReport{}, fmt.Errorf(
-				"collect burn samples: checkpoint changed during collection: previous=%d current=%d",
-				report.IndexedThrough,
-				page.IndexedThrough,
-			)
-		}
-
-		if len(page.Candidates) == 0 {
-			if page.NextCursor != nil {
-				return BurnSampleCollectionReport{}, fmt.Errorf(
-					"collect burn samples: empty page has next cursor %s",
-					page.NextCursor,
-				)
-			}
-
-			break
-		}
-
-		for candidateIndex, candidate := range page.Candidates {
-			if err := ctx.Err(); err != nil {
-				return BurnSampleCollectionReport{}, err
-			}
-
-			report.CandidateEvents++
-
-			cursorCopy :=
-				candidate.Cursor
-
-			previousEvent =
-				&cursorCopy
-
-			report.LastProcessedCursor =
-				&domain.EventCursor{
-					BlockNumber: cursorCopy.
-						BlockNumber,
-
-					LogIndex: cursorCopy.
-						LogIndex,
-				}
-
-			preBurn, err :=
-				s.preBurnBuilder.Build(
-					ctx,
-					candidate,
-					normalizedRequest.
-						SwapPageSize,
-				)
-			if err != nil {
-				return BurnSampleCollectionReport{}, fmt.Errorf(
-					"collect burn samples: build pre-burn state for %s: %w",
-					candidate.EventKey(),
-					err,
-				)
-			}
-
-			if err :=
-				validateCollectorPreBurnState(
-					preBurn,
-					candidate,
-				); err != nil {
-				return BurnSampleCollectionReport{}, fmt.Errorf(
-					"collect burn samples: invalid pre-burn state for %s: %w",
-					candidate.EventKey(),
-					err,
-				)
-			}
-
-			if preBurn.Pool.Liquidity.Sign() == 0 {
-				report.Skipped =
-					append(
-						report.Skipped,
-						newBurnSampleSkip(
-							candidate,
-							BurnSampleSkipZeroActiveLiquidityBefore,
-							"price-impact curves are undefined because active liquidity before the burn is zero",
-						),
-					)
-
-				report.SkippedEvents++
-
-				if shouldStopBurnCollection(
-					&report,
-					page,
-					candidateIndex,
-					normalizedRequest,
-				) {
-					return finalizeBurnCollectionReport(
-						report,
-					)
-				}
-
-				continue
-			}
-
-			burnIsActive :=
-				candidate.TickLower <=
-					preBurn.Pool.CurrentTick &&
-					preBurn.Pool.CurrentTick <
-						candidate.TickUpper
-
-			if burnIsActive &&
-				preBurn.Pool.Liquidity.Cmp(
-					candidate.
-						LiquidityRemoved,
-				) == 0 {
-				report.Skipped =
-					append(
-						report.Skipped,
-						newBurnSampleSkip(
-							candidate,
-							BurnSampleSkipZeroActiveLiquidityAfter,
-							"the burn removes all active liquidity, so the fixed-grid post-burn price-impact curve is undefined",
-						),
-					)
-
-				report.SkippedEvents++
-
-				if shouldStopBurnCollection(
-					&report,
-					page,
-					candidateIndex,
-					normalizedRequest,
-				) {
-					return finalizeBurnCollectionReport(
-						report,
-					)
-				}
-
-				continue
-			}
-
-			impact, err :=
-				s.impactAnalyzer.Analyze(
-					ctx,
-					BurnEventImpactRequest{
-						PreBurn: preBurn,
-
-						ZeroForOneAmountsIn: cloneBurnAmountGrid(
-							normalizedRequest.
-								ZeroForOneAmountsIn,
-						),
-
-						OneForZeroAmountsIn: cloneBurnAmountGrid(
-							normalizedRequest.
-								OneForZeroAmountsIn,
-						),
-
-						ThresholdsBps: append(
-							[]decimal.Decimal(nil),
-							normalizedRequest.
-								ThresholdsBps...,
-						),
-					},
-				)
-			if err != nil {
-				return BurnSampleCollectionReport{}, fmt.Errorf(
-					"collect burn samples: analyze burn %s: %w",
-					candidate.EventKey(),
-					err,
-				)
-			}
-
-			sample, err :=
-				newBurnEventSample(
-					preBurn,
-					impact,
-				)
-			if err != nil {
-				return BurnSampleCollectionReport{}, fmt.Errorf(
-					"collect burn samples: build sample for %s: %w",
-					candidate.EventKey(),
-					err,
-				)
-			}
-
-			report.Samples =
+		if skipped != nil {
+			report.Skipped =
 				append(
-					report.Samples,
-					sample,
+					report.Skipped,
+					*skipped,
 				)
 
-			report.AnalyzedEvents++
+			report.SkippedEvents++
 
-			if shouldStopBurnCollection(
-				&report,
-				page,
-				candidateIndex,
-				normalizedRequest,
-			) {
-				return finalizeBurnCollectionReport(
-					report,
-				)
-			}
+			continue
 		}
 
-		if page.NextCursor == nil {
-			break
-		}
-
-		lastCandidateCursor :=
-			page.Candidates[len(page.Candidates)-1].Cursor
-
-		if !page.NextCursor.Equal(
-			lastCandidateCursor,
-		) {
+		if sample == nil {
 			return BurnSampleCollectionReport{}, fmt.Errorf(
-				"collect burn samples: next cursor %s does not match page tail %s",
-				page.NextCursor,
-				lastCandidateCursor,
+				"collect burn samples: candidate %s produced neither sample nor exclusion",
+				candidate.EventKey(),
 			)
 		}
 
-		nextCursorCopy :=
-			*page.NextCursor
+		report.Samples =
+			append(
+				report.Samples,
+				*sample,
+			)
 
-		after =
-			&nextCursorCopy
+		report.AnalyzedEvents++
 	}
+
+	report.Truncated =
+		report.CandidateEvents <
+			report.DiscoveredCandidates
+
+	// Sampling order is intentionally not chronological.
+	// CSV observations are restored to blockchain order before export.
+	sortBurnCollectionObservations(
+		&report,
+	)
 
 	return finalizeBurnCollectionReport(
 		report,
 	)
+}
+
+func (s *BurnSampleCollector) analyzeBurnCandidate(
+	ctx context.Context,
+	req BurnSampleCollectionRequest,
+	candidate domain.BurnCandidate,
+) (
+	*BurnEventSample,
+	*BurnSampleSkip,
+	error,
+) {
+	preBurn, err :=
+		s.preBurnBuilder.Build(
+			ctx,
+			candidate,
+			req.SwapPageSize,
+		)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"build pre-burn state: %w",
+			err,
+		)
+	}
+
+	if err := validateCollectorPreBurnState(
+		preBurn,
+		candidate,
+	); err != nil {
+		return nil, nil, fmt.Errorf(
+			"invalid pre-burn state: %w",
+			err,
+		)
+	}
+
+	if preBurn.Pool.Liquidity.Sign() == 0 {
+		skipped :=
+			newBurnSampleSkip(
+				candidate,
+				BurnSampleSkipZeroActiveLiquidityBefore,
+				"price-impact curves are undefined because active liquidity before the burn is zero",
+			)
+
+		return nil, &skipped, nil
+	}
+
+	burnIsActive :=
+		candidate.TickLower <=
+			preBurn.Pool.CurrentTick &&
+			preBurn.Pool.CurrentTick <
+				candidate.TickUpper
+
+	if burnIsActive &&
+		preBurn.Pool.Liquidity.Cmp(
+			candidate.LiquidityRemoved,
+		) == 0 {
+		skipped :=
+			newBurnSampleSkip(
+				candidate,
+				BurnSampleSkipZeroActiveLiquidityAfter,
+				"the burn removes all active liquidity, so the fixed-grid post-burn price-impact curve is undefined",
+			)
+
+		return nil, &skipped, nil
+	}
+
+	impact, err :=
+		s.impactAnalyzer.Analyze(
+			ctx,
+			BurnEventImpactRequest{
+				PreBurn: preBurn,
+
+				ZeroForOneAmountsIn: cloneBurnAmountGrid(
+					req.ZeroForOneAmountsIn,
+				),
+
+				OneForZeroAmountsIn: cloneBurnAmountGrid(
+					req.OneForZeroAmountsIn,
+				),
+
+				ThresholdsBps: append(
+					[]decimal.Decimal(nil),
+					req.ThresholdsBps...,
+				),
+			},
+		)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"analyze burn impact: %w",
+			err,
+		)
+	}
+
+	sample, err :=
+		newBurnEventSample(
+			preBurn,
+			impact,
+		)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"build sample: %w",
+			err,
+		)
+	}
+
+	return &sample, nil, nil
 }
 
 func normalizeBurnSampleCollectionRequest(
@@ -1161,6 +1103,21 @@ func normalizeBurnSampleCollectionRequest(
 			"collect burn samples: max samples %d exceeds max candidates %d",
 			req.MaxSamples,
 			req.MaxCandidates,
+		)
+	}
+
+	if req.SamplingBins < 0 {
+		return BurnSampleCollectionRequest{}, fmt.Errorf(
+			"collect burn samples: sampling bins %d must not be negative",
+			req.SamplingBins,
+		)
+	}
+
+	if req.SamplingBins > req.MaxSamples {
+		return BurnSampleCollectionRequest{}, fmt.Errorf(
+			"collect burn samples: sampling bins %d exceed max samples %d",
+			req.SamplingBins,
+			req.MaxSamples,
 		)
 	}
 

@@ -964,6 +964,10 @@ func run() error {
 
 			MaxSamples: config.BurnMaxSamples,
 
+			SamplingBins: config.BurnSamplingBins,
+
+			SamplingSeed: config.BurnSamplingSeed,
+
 			Horizons: defaultBurnOutcomeHorizons(),
 		},
 	); err != nil {
