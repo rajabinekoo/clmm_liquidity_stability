@@ -1,11 +1,14 @@
 package services
 
 import (
+	"context"
 	"encoding/csv"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/repositories"
 	"github.com/shopspring/decimal"
 )
 
@@ -548,4 +551,179 @@ func readBurnOutputCSV(
 	}
 
 	return records
+}
+
+func TestBurnSampleCollectorEnforcesMinimumSpacing(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const poolAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	candidates := []domain.BurnCandidate{
+		collectorBurnCandidate(
+			poolAddress,
+			100,
+			1,
+			100,
+		),
+
+		collectorBurnCandidate(
+			poolAddress,
+			105,
+			1,
+			100,
+		),
+
+		collectorBurnCandidate(
+			poolAddress,
+			120,
+			1,
+			100,
+		),
+	}
+
+	preBurnResults :=
+		make(
+			map[string]PreBurnStateResult,
+			2,
+		)
+
+	impactResults :=
+		make(
+			map[string]BurnEventImpactResult,
+			2,
+		)
+
+	for _, candidate := range []domain.BurnCandidate{
+		candidates[0],
+		candidates[2],
+	} {
+		preBurn :=
+			collectorPreBurnFixture(
+				candidate,
+				1_000,
+			)
+
+		preBurnResults[candidate.EventKey()] = preBurn
+
+		impactResults[candidate.EventKey()] = collectorImpactFixture(
+			preBurn,
+		)
+	}
+
+	collector :=
+		NewBurnSampleCollector(
+			&fakeBurnCandidatePageLoader{
+				pages: []repositories.BurnCandidatePage{
+					{
+						PoolAddress: poolAddress,
+
+						FromBlock: 100,
+						ToBlock:   130,
+
+						IndexedThrough: 200,
+
+						Candidates: candidates,
+					},
+				},
+			},
+
+			&fakeBurnPreStateBuilder{
+				results: preBurnResults,
+			},
+
+			&fakeBurnImpactAnalyzer{
+				results: impactResults,
+			},
+		)
+
+	report, err :=
+		collector.Collect(
+			context.Background(),
+			BurnSampleCollectionRequest{
+				PoolAddress: poolAddress,
+
+				FromBlock: 100,
+				ToBlock:   130,
+
+				PageSize:     10,
+				SwapPageSize: 10,
+
+				MaxCandidates: 10,
+				MaxSamples:    2,
+
+				SamplingBins: 0,
+				SamplingSeed: 1,
+
+				MinimumSpacingBlocks: 10,
+				RequireMaxSamples:    true,
+
+				ZeroForOneAmountsIn: collectorAmountGrid(),
+
+				OneForZeroAmountsIn: collectorAmountGrid(),
+
+				ThresholdsBps: collectorThresholds(),
+			},
+		)
+	if err != nil {
+		t.Fatalf(
+			"Collect() error = %v",
+			err,
+		)
+	}
+
+	if report.AnalyzedEvents != 2 {
+		t.Fatalf(
+			"analyzed events = %d, want 2",
+			report.AnalyzedEvents,
+		)
+	}
+
+	if report.SpacingRejectedEvents != 1 {
+		t.Fatalf(
+			"spacing rejected events = %d, want 1",
+			report.SpacingRejectedEvents,
+		)
+	}
+
+	if report.SkippedEvents != 1 {
+		t.Fatalf(
+			"skipped events = %d, want 1",
+			report.SkippedEvents,
+		)
+	}
+
+	if !report.SampleTargetReached {
+		t.Fatal(
+			"sample target reached = false, want true",
+		)
+	}
+
+	if len(report.Samples) != 2 {
+		t.Fatalf(
+			"sample count = %d, want 2",
+			len(report.Samples),
+		)
+	}
+
+	distance :=
+		burnBlockDistance(
+			report.Samples[0].
+				Burn.
+				Cursor.
+				BlockNumber,
+
+			report.Samples[1].
+				Burn.
+				Cursor.
+				BlockNumber,
+		)
+
+	if distance < 10 {
+		t.Fatalf(
+			"sample distance = %d, want at least 10",
+			distance,
+		)
+	}
 }

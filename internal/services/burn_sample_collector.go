@@ -23,6 +23,8 @@ const (
 	BurnSampleSkipZeroActiveLiquidityBefore BurnSampleSkipReason = "zero_active_liquidity_before_burn"
 
 	BurnSampleSkipZeroActiveLiquidityAfter BurnSampleSkipReason = "zero_active_liquidity_after_burn"
+
+	BurnSampleSkipMinimumSpacing BurnSampleSkipReason = "minimum_spacing"
 )
 
 type BurnSampleSkip struct {
@@ -715,6 +717,16 @@ type BurnSampleCollectionRequest struct {
 	// SamplingSeed makes the candidate selection reproducible.
 	SamplingSeed uint64
 
+	// MinimumSpacingBlocks prevents the future-outcome windows of selected
+	// burn events from overlapping too heavily.
+	//
+	// Zero disables spacing enforcement.
+	MinimumSpacingBlocks uint64
+
+	// RequireMaxSamples makes an incomplete study fail instead of silently
+	// producing fewer successful samples than requested.
+	RequireMaxSamples bool
+
 	ZeroForOneAmountsIn []*big.Int
 	OneForZeroAmountsIn []*big.Int
 
@@ -753,6 +765,12 @@ type BurnSampleCollectionReport struct {
 	Truncated bool
 
 	LastProcessedCursor *domain.EventCursor
+
+	MinimumSpacingBlocks uint64
+
+	SpacingRejectedEvents int
+
+	SampleTargetReached bool
 
 	Samples []BurnEventSample
 	Skipped []BurnSampleSkip
@@ -904,6 +922,9 @@ func (s *BurnSampleCollector) Collect(
 				[]BurnSampleSkip,
 				0,
 			),
+
+			MinimumSpacingBlocks: normalizedRequest.
+				MinimumSpacingBlocks,
 		}
 
 	// Phase 3: perform expensive pre-burn reconstruction only for candidates
@@ -927,6 +948,41 @@ func (s *BurnSampleCollector) Collect(
 				report.LastProcessedCursor,
 				candidate.Cursor,
 			)
+
+		if conflict :=
+			findBurnSampleSpacingConflict(
+				candidate,
+				report.Samples,
+				normalizedRequest.
+					MinimumSpacingBlocks,
+			); conflict != nil {
+			skipped :=
+				newBurnSampleSkip(
+					candidate,
+					BurnSampleSkipMinimumSpacing,
+					fmt.Sprintf(
+						"candidate block %d is only %d blocks from selected burn %s at block %d; minimum spacing is %d blocks",
+						candidate.Cursor.BlockNumber,
+						conflict.Distance,
+						conflict.EventKey,
+						conflict.BlockNumber,
+						normalizedRequest.
+							MinimumSpacingBlocks,
+					),
+				)
+
+			report.Skipped =
+				append(
+					report.Skipped,
+					skipped,
+				)
+
+			report.SkippedEvents++
+
+			report.SpacingRejectedEvents++
+
+			continue
+		}
 
 		sample, skipped, err :=
 			s.analyzeBurnCandidate(
@@ -973,6 +1029,23 @@ func (s *BurnSampleCollector) Collect(
 	report.Truncated =
 		report.CandidateEvents <
 			report.DiscoveredCandidates
+
+	report.SampleTargetReached =
+		report.AnalyzedEvents >=
+			normalizedRequest.MaxSamples
+
+	if normalizedRequest.RequireMaxSamples &&
+		!report.SampleTargetReached {
+		return BurnSampleCollectionReport{}, fmt.Errorf(
+			"collect burn samples: only %d spacing-safe samples were produced, but %d were required; discovered=%d attempted=%d spacing_rejected=%d minimum_spacing_blocks=%d",
+			report.AnalyzedEvents,
+			normalizedRequest.MaxSamples,
+			report.DiscoveredCandidates,
+			report.CandidateEvents,
+			report.SpacingRejectedEvents,
+			normalizedRequest.MinimumSpacingBlocks,
+		)
+	}
 
 	// Sampling order is intentionally not chronological.
 	// CSV observations are restored to blockchain order before export.
@@ -1156,6 +1229,30 @@ func normalizeBurnSampleCollectionRequest(
 			req.MaxSamples,
 			req.MaxCandidates,
 		)
+	}
+
+	if req.MinimumSpacingBlocks > 0 &&
+		req.MaxSamples > 1 {
+		blockSpan :=
+			req.ToBlock -
+				req.FromBlock
+
+		maximumPossibleSamples :=
+			blockSpan/
+				req.MinimumSpacingBlocks +
+				1
+
+		if uint64(req.MaxSamples) >
+			maximumPossibleSamples {
+			return BurnSampleCollectionRequest{}, fmt.Errorf(
+				"collect burn samples: block range [%d,%d] can contain at most %d samples with minimum spacing %d, but max samples is %d",
+				req.FromBlock,
+				req.ToBlock,
+				maximumPossibleSamples,
+				req.MinimumSpacingBlocks,
+				req.MaxSamples,
+			)
+		}
 	}
 
 	if req.SamplingBins < 0 {

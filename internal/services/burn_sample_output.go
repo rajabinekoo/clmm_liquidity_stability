@@ -26,6 +26,11 @@ type BurnSampleCollectionSummary struct {
 
 	Truncated bool
 
+	SampleTargetReached bool
+
+	MinimumSpacingBlocks  uint64
+	SpacingRejectedEvents int
+
 	ActiveBurnSamples   int
 	InactiveBurnSamples int
 
@@ -153,6 +158,12 @@ func BuildBurnSampleCollectionSummary(
 			SkippedEvents: report.SkippedEvents,
 
 			Truncated: report.Truncated,
+
+			SampleTargetReached: report.SampleTargetReached,
+
+			MinimumSpacingBlocks: report.MinimumSpacingBlocks,
+
+			SpacingRejectedEvents: 0,
 		}
 
 	seen :=
@@ -353,6 +364,10 @@ func BuildBurnSampleCollectionSummary(
 			summary.
 				ZeroActiveLiquidityAfterSkips++
 
+		case BurnSampleSkipMinimumSpacing:
+			summary.
+				SpacingRejectedEvents++
+
 		default:
 			return BurnSampleCollectionSummary{}, fmt.Errorf(
 				"build burn collection summary: exclusion %d has unknown reason %q",
@@ -388,18 +403,26 @@ func BuildBurnSampleCollectionSummary(
 		)
 	}
 
-	if summary.
-		ZeroActiveLiquidityBeforeSkips+
-		summary.
-			ZeroActiveLiquidityAfterSkips !=
+	categorizedSkippedEvents :=
+		summary.ZeroActiveLiquidityBeforeSkips +
+			summary.ZeroActiveLiquidityAfterSkips +
+			summary.SpacingRejectedEvents
+
+	if categorizedSkippedEvents !=
 		report.SkippedEvents {
 		return BurnSampleCollectionSummary{}, fmt.Errorf(
 			"build burn collection summary: categorized exclusions=%d, skipped=%d",
-			summary.
-				ZeroActiveLiquidityBeforeSkips+
-				summary.
-					ZeroActiveLiquidityAfterSkips,
+			categorizedSkippedEvents,
 			report.SkippedEvents,
+		)
+	}
+
+	if summary.SpacingRejectedEvents !=
+		report.SpacingRejectedEvents {
+		return BurnSampleCollectionSummary{}, fmt.Errorf(
+			"build burn collection summary: spacing exclusions=%d, report spacing rejections=%d",
+			summary.SpacingRejectedEvents,
+			report.SpacingRejectedEvents,
 		)
 	}
 
@@ -883,7 +906,8 @@ func WriteBurnSampleExclusionsCSV(
 
 		switch exclusion.Reason {
 		case BurnSampleSkipZeroActiveLiquidityBefore,
-			BurnSampleSkipZeroActiveLiquidityAfter:
+			BurnSampleSkipZeroActiveLiquidityAfter,
+			BurnSampleSkipMinimumSpacing:
 
 		default:
 			return fmt.Errorf(
@@ -991,6 +1015,10 @@ func WriteBurnSampleCollectionSummaryCSV(
 			"skipped_events",
 			"truncated",
 
+			"sample_target_reached",
+			"minimum_spacing_blocks",
+			"spacing_rejected_events",
+
 			"active_burn_samples",
 			"inactive_burn_samples",
 
@@ -1053,6 +1081,17 @@ func WriteBurnSampleCollectionSummaryCSV(
 				),
 				strconv.FormatBool(
 					summary.Truncated,
+				),
+
+				strconv.FormatBool(
+					summary.SampleTargetReached,
+				),
+				strconv.FormatUint(
+					summary.MinimumSpacingBlocks,
+					10,
+				),
+				strconv.Itoa(
+					summary.SpacingRejectedEvents,
 				),
 
 				strconv.Itoa(
@@ -1241,7 +1280,8 @@ func validateBurnSampleCollectionSummary(
 
 	if summary.CandidateEvents < 0 ||
 		summary.AnalyzedEvents < 0 ||
-		summary.SkippedEvents < 0 {
+		summary.SkippedEvents < 0 ||
+		summary.SpacingRejectedEvents < 0 {
 		return fmt.Errorf(
 			"burn collection summary: collection counters must not be negative",
 		)
@@ -1269,17 +1309,16 @@ func validateBurnSampleCollectionSummary(
 		)
 	}
 
-	if summary.
-		ZeroActiveLiquidityBeforeSkips+
-		summary.
-			ZeroActiveLiquidityAfterSkips !=
+	categorizedSkippedEvents :=
+		summary.ZeroActiveLiquidityBeforeSkips +
+			summary.ZeroActiveLiquidityAfterSkips +
+			summary.SpacingRejectedEvents
+
+	if categorizedSkippedEvents !=
 		summary.SkippedEvents {
 		return fmt.Errorf(
 			"burn collection summary: categorized skips=%d, skipped=%d",
-			summary.
-				ZeroActiveLiquidityBeforeSkips+
-				summary.
-					ZeroActiveLiquidityAfterSkips,
+			categorizedSkippedEvents,
 			summary.SkippedEvents,
 		)
 	}

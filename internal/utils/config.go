@@ -53,6 +53,10 @@ type Config struct {
 
 	BurnSamplingBins int    `env:"BURN_SAMPLING_BINS" envDefault:"30"`
 	BurnSamplingSeed uint64 `env:"BURN_SAMPLING_SEED" envDefault:"20260725"`
+
+	BurnMinimumSpacingBlocks uint64 `env:"BURN_MINIMUM_SPACING_BLOCKS" envDefault:"7200"`
+
+	BurnRequireMaxSamples bool `env:"BURN_REQUIRE_MAX_SAMPLES" envDefault:"true"`
 }
 
 type ExportedPoolConfig struct {
@@ -88,6 +92,10 @@ type ExportedPoolConfig struct {
 
 	BurnSamplingBins int    `env:"BURN_SAMPLING_BINS" envDefault:"30"`
 	BurnSamplingSeed uint64 `env:"BURN_SAMPLING_SEED" envDefault:"20260725"`
+
+	BurnMinimumSpacingBlocks uint64 `json:"burn_minimum_spacing_blocks"`
+
+	BurnRequireMaxSamples bool `json:"burn_require_max_samples"`
 }
 
 func LoadConfig() (Config, error) {
@@ -327,6 +335,10 @@ func WritePoolConfigJSON(
 		BurnSamplingSeed: cfg.BurnSamplingSeed,
 
 		PositionCoverageBps: cfg.PositionCoverageBps,
+
+		BurnMinimumSpacingBlocks: cfg.BurnMinimumSpacingBlocks,
+
+		BurnRequireMaxSamples: cfg.BurnRequireMaxSamples,
 	}
 
 	if dir := filepath.Dir(path); dir != "." {
