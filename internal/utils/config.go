@@ -6,6 +6,8 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +59,10 @@ type Config struct {
 	BurnMinimumSpacingBlocks uint64 `env:"BURN_MINIMUM_SPACING_BLOCKS" envDefault:"7200"`
 
 	BurnRequireMaxSamples bool `env:"BURN_REQUIRE_MAX_SAMPLES" envDefault:"true"`
+
+	JointRemovalTopCounts string `env:"JOINT_REMOVAL_TOP_COUNTS" envDefault:"1,3,5"`
+
+	JointRemovalActiveLiquidityShareBps string `env:"JOINT_REMOVAL_ACTIVE_LIQUIDITY_SHARE_BPS" envDefault:"1000,2500"`
 }
 
 type ExportedPoolConfig struct {
@@ -96,6 +102,10 @@ type ExportedPoolConfig struct {
 	BurnMinimumSpacingBlocks uint64 `json:"burn_minimum_spacing_blocks"`
 
 	BurnRequireMaxSamples bool `json:"burn_require_max_samples"`
+
+	JointRemovalTopCounts []int `json:"joint_removal_top_counts"`
+
+	JointRemovalActiveLiquidityShareBps []int64 `json:"joint_removal_active_liquidity_share_bps"`
 }
 
 func LoadConfig() (Config, error) {
@@ -271,6 +281,39 @@ func (c Config) Validate() error {
 		)
 	}
 
+	topCounts, err :=
+		c.JointRemovalTopCountValues()
+	if err != nil {
+		return err
+	}
+
+	for _, count := range topCounts {
+		if count > c.PositionLimit {
+			return fmt.Errorf(
+				"config: joint-removal top count %d exceeds POSITION_LIMIT %d",
+				count,
+				c.PositionLimit,
+			)
+		}
+	}
+
+	shareTargets, err :=
+		c.JointRemovalActiveLiquidityShareBpsValues()
+	if err != nil {
+		return err
+	}
+
+	for _, target := range shareTargets {
+		if target >
+			c.PositionCoverageBps {
+			return fmt.Errorf(
+				"config: joint-removal share target %d exceeds selected position coverage %d",
+				target,
+				c.PositionCoverageBps,
+			)
+		}
+	}
+
 	return nil
 }
 
@@ -293,6 +336,18 @@ func WritePoolConfigJSON(
 	cfg Config,
 ) error {
 	rawAmounts, err := cfg.AmountGridToken0Raw()
+	if err != nil {
+		return err
+	}
+
+	jointRemovalTopCounts, err :=
+		cfg.JointRemovalTopCountValues()
+	if err != nil {
+		return err
+	}
+
+	jointRemovalShareTargets, err :=
+		cfg.JointRemovalActiveLiquidityShareBpsValues()
 	if err != nil {
 		return err
 	}
@@ -339,6 +394,10 @@ func WritePoolConfigJSON(
 		BurnMinimumSpacingBlocks: cfg.BurnMinimumSpacingBlocks,
 
 		BurnRequireMaxSamples: cfg.BurnRequireMaxSamples,
+
+		JointRemovalTopCounts: jointRemovalTopCounts,
+
+		JointRemovalActiveLiquidityShareBps: jointRemovalShareTargets,
 	}
 
 	if dir := filepath.Dir(path); dir != "." {
@@ -481,4 +540,164 @@ func slugify(value string) string {
 	}
 
 	return slug
+}
+
+func (c Config) JointRemovalTopCountValues() ([]int, error) {
+	parts :=
+		strings.Split(
+			c.JointRemovalTopCounts,
+			",",
+		)
+
+	seen :=
+		make(
+			map[int]struct{},
+			len(parts),
+		)
+
+	values := make(
+		[]int,
+		0,
+		len(parts),
+	)
+
+	for _, part := range parts {
+		part =
+			strings.TrimSpace(
+				part,
+			)
+
+		if part == "" {
+			continue
+		}
+
+		value, err :=
+			strconv.Atoi(
+				part,
+			)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"config: parse JOINT_REMOVAL_TOP_COUNTS value %q: %w",
+				part,
+				err,
+			)
+		}
+
+		if value <= 0 {
+			return nil, fmt.Errorf(
+				"config: JOINT_REMOVAL_TOP_COUNTS value %d must be positive",
+				value,
+			)
+		}
+
+		if _, exists := seen[value]; exists {
+			continue
+		}
+
+		seen[value] =
+			struct{}{}
+
+		values =
+			append(
+				values,
+				value,
+			)
+	}
+
+	if len(values) == 0 {
+		return nil, fmt.Errorf(
+			"config: JOINT_REMOVAL_TOP_COUNTS is empty",
+		)
+	}
+
+	sort.Ints(
+		values,
+	)
+
+	return values, nil
+}
+
+func (c Config) JointRemovalActiveLiquidityShareBpsValues() ([]int64, error) {
+	parts :=
+		strings.Split(
+			c.JointRemovalActiveLiquidityShareBps,
+			",",
+		)
+
+	seen :=
+		make(
+			map[int64]struct{},
+			len(parts),
+		)
+
+	values := make(
+		[]int64,
+		0,
+		len(parts),
+	)
+
+	for _, part := range parts {
+		part =
+			strings.TrimSpace(
+				part,
+			)
+
+		if part == "" {
+			continue
+		}
+
+		value, err :=
+			strconv.ParseInt(
+				part,
+				10,
+				64,
+			)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"config: parse JOINT_REMOVAL_ACTIVE_LIQUIDITY_SHARE_BPS value %q: %w",
+				part,
+				err,
+			)
+		}
+
+		if value <= 0 ||
+			value >= 10_000 {
+			return nil, fmt.Errorf(
+				"config: joint-removal active-liquidity share %d must be inside [1,10000)",
+				value,
+			)
+		}
+
+		if _, exists := seen[value]; exists {
+			continue
+		}
+
+		seen[value] =
+			struct{}{}
+
+		values =
+			append(
+				values,
+				value,
+			)
+	}
+
+	if len(values) == 0 {
+		return nil, fmt.Errorf(
+			"config: JOINT_REMOVAL_ACTIVE_LIQUIDITY_SHARE_BPS is empty",
+		)
+	}
+
+	sort.Slice(
+		values,
+		func(
+			left int,
+			right int,
+		) bool {
+			return values[left] <
+				values[right]
+		},
+	)
+
+	return values, nil
 }

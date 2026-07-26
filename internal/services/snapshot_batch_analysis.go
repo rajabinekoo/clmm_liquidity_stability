@@ -49,6 +49,10 @@ type SnapshotBatchRequest struct {
 	ThresholdsBps       []decimal.Decimal
 
 	PositionCoverageBps int64
+
+	JointRemovalTopCounts []int
+
+	JointRemovalActiveLiquidityShareBps []int64
 }
 
 type SnapshotBatchResult struct {
@@ -86,8 +90,12 @@ type SnapshotBatchResult struct {
 
 type SnapshotBatchDetailedResult struct {
 	Summary SnapshotBatchResult
-	Pool    *domain.ReconstructedPool
-	Report  *BidirectionalLiquidityImpactReport
+
+	Pool *domain.ReconstructedPool
+
+	Report *BidirectionalLiquidityImpactReport
+
+	JointRemoval *JointRemovalReport
 }
 
 func (s *SnapshotBatchAnalysisService) Analyze(
@@ -134,6 +142,16 @@ func (s *SnapshotBatchAnalysisService) Analyze(
 			decimal.NewFromInt(50),
 			decimal.NewFromInt(100),
 		}
+	}
+	if _, err :=
+		buildJointRemovalScenarioSpecs(
+			req.JointRemovalTopCounts,
+			req.JointRemovalActiveLiquidityShareBps,
+		); err != nil {
+		return nil, fmt.Errorf(
+			"snapshot batch analysis: invalid joint-removal configuration: %w",
+			err,
+		)
 	}
 
 	blocks := snapshotCandidateBlocks(
@@ -223,6 +241,40 @@ func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
 		return SnapshotBatchDetailedResult{}, err
 	}
 
+	jointRemovalReport, err :=
+		s.impact.AnalyzeJointRemovalScenarios(
+			ctx,
+			JointRemovalRequest{
+				Pool: pool,
+
+				BaseReport: report,
+
+				ZeroForOneAmountsIn: req.ZeroForOneAmountsIn,
+
+				OneForZeroAmountsIn: oneForZeroAmountsIn,
+
+				ThresholdsBps: req.ThresholdsBps,
+
+				TopCounts: append(
+					[]int(nil),
+					req.
+						JointRemovalTopCounts...,
+				),
+
+				TargetActiveLiquidityShareBps: append(
+					[]int64(nil),
+					req.
+						JointRemovalActiveLiquidityShareBps...,
+				),
+			},
+		)
+	if err != nil {
+		return SnapshotBatchDetailedResult{}, fmt.Errorf(
+			"analyze joint removal scenarios: %w",
+			err,
+		)
+	}
+
 	summary := summarizeSnapshotBatchResult(
 		snapshotIndex,
 		pool,
@@ -231,8 +283,12 @@ func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
 
 	return SnapshotBatchDetailedResult{
 		Summary: summary,
-		Pool:    pool,
-		Report:  report,
+
+		Pool: pool,
+
+		Report: report,
+
+		JointRemoval: jointRemovalReport,
 	}, nil
 }
 

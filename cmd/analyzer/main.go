@@ -397,6 +397,113 @@ func run() error {
 		return err
 	}
 
+	jointRemovalTopCounts, err :=
+		config.JointRemovalTopCountValues()
+	if err != nil {
+		return err
+	}
+
+	jointRemovalShareTargets, err :=
+		config.
+			JointRemovalActiveLiquidityShareBpsValues()
+	if err != nil {
+		return err
+	}
+
+	jointRemovalReport, err :=
+		impactService.AnalyzeJointRemovalScenarios(
+			ctx,
+			services.JointRemovalRequest{
+				Pool: pool,
+
+				BaseReport: bidirectionalReport,
+
+				ZeroForOneAmountsIn: curveAmounts,
+
+				OneForZeroAmountsIn: token1Amounts,
+
+				ThresholdsBps: thresholdsBps,
+
+				TopCounts: jointRemovalTopCounts,
+
+				TargetActiveLiquidityShareBps: jointRemovalShareTargets,
+			},
+		)
+	if err != nil {
+		return fmt.Errorf(
+			"analyze joint removal scenarios: %w",
+			err,
+		)
+	}
+
+	jointRemovalPath :=
+		filepath.Join(
+			outputDir,
+			fmt.Sprintf(
+				"joint_removal_lsis_%s_%d.csv",
+				pool.PoolAddress,
+				pool.BlockNumber,
+			),
+		)
+
+	if err :=
+		services.WriteJointRemovalImpactCSV(
+			jointRemovalPath,
+			pool,
+			jointRemovalReport,
+		); err != nil {
+		return err
+	}
+
+	for _, scenario := range jointRemovalReport.Scenarios {
+		slog.Info(
+			"joint removal impact",
+
+			"scenario_id",
+			scenario.ScenarioID,
+
+			"scenario_kind",
+			scenario.Kind,
+
+			"removed_positions",
+			scenario.RemovedPositionCount,
+
+			"removed_active_liquidity_share",
+			scenario.
+				RemovedActiveLiquidityShare.
+				String(),
+
+			"joint_total_lsis_bps",
+			scenario.
+				TotalLSISBps.
+				String(),
+
+			"sum_individual_total_lsis_bps",
+			scenario.
+				SumIndividualTotalLSISBps.
+				String(),
+
+			"interaction_lsis_bps",
+			scenario.
+				TotalInteractionLSISBps.
+				String(),
+
+			"amplification_ratio",
+			scenario.
+				TotalAmplificationRatio.
+				String(),
+
+			"skipped",
+			scenario.Skipped,
+		)
+	}
+
+	slog.Info(
+		"joint removal impact CSV exported",
+		"path",
+		jointRemovalPath,
+	)
+
 	correlationPath := filepath.Join(
 		outputDir,
 		fmt.Sprintf(
@@ -449,6 +556,16 @@ func run() error {
 			PositionLimit:       config.PositionLimit,
 			ThresholdsBps:       thresholdsBps,
 			PositionCoverageBps: config.PositionCoverageBps,
+
+			JointRemovalTopCounts: append(
+				[]int(nil),
+				jointRemovalTopCounts...,
+			),
+
+			JointRemovalActiveLiquidityShareBps: append(
+				[]int64(nil),
+				jointRemovalShareTargets...,
+			),
 		},
 	)
 	if err != nil {
@@ -526,6 +643,55 @@ func run() error {
 	slog.Info(
 		"snapshot batch ranges exported",
 		"path", batchRangesPath,
+	)
+
+	batchJointRemovalPath :=
+		filepath.Join(
+			outputDir,
+			fmt.Sprintf(
+				"snapshot_batch_joint_removal_%s_%d.csv",
+				pool.PoolAddress,
+				pool.BlockNumber,
+			),
+		)
+
+	if err :=
+		services.WriteSnapshotBatchJointRemovalCSV(
+			batchJointRemovalPath,
+			batchResults,
+		); err != nil {
+		return fmt.Errorf(
+			"write snapshot batch joint-removal CSV: %w",
+			err,
+		)
+	}
+
+	batchJointRemovalRows := 0
+
+	for _, result := range batchResults {
+		if result.JointRemoval == nil {
+			continue
+		}
+
+		batchJointRemovalRows +=
+			len(
+				result.
+					JointRemoval.
+					Scenarios,
+			)
+	}
+
+	slog.Info(
+		"snapshot batch joint-removal exported",
+
+		"path",
+		batchJointRemovalPath,
+
+		"snapshots",
+		len(batchResults),
+
+		"rows",
+		batchJointRemovalRows,
 	)
 
 	batchCorrelations, err := services.BuildSnapshotBatchPositionCorrelations(
@@ -970,6 +1136,10 @@ func run() error {
 			SamplingBins: config.BurnSamplingBins,
 
 			SamplingSeed: config.BurnSamplingSeed,
+
+			MinimumSpacingBlocks: config.BurnMinimumSpacingBlocks,
+
+			RequireMaxSamples: config.BurnRequireMaxSamples,
 
 			Horizons: defaultBurnOutcomeHorizons(),
 		},
