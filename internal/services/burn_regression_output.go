@@ -284,6 +284,21 @@ func WriteBurnRegressionObservationsCSV(
 			"sqrt_price_x96_before_burn",
 			"future_sqrt_price_x96",
 
+			"market_controls_available",
+
+			"tick_change",
+			"absolute_tick_change",
+
+			"price_return_bps",
+			"absolute_price_return_bps",
+
+			"future_range_location",
+			"future_burn_range_active",
+
+			"future_active_liquidity_delta_from_post_burn",
+			"future_active_liquidity_change_fraction_from_post_burn",
+			"future_active_liquidity_change_bps_from_post_burn",
+
 			"liquidity_removed",
 			"range_liquidity_before_burn",
 			"range_liquidity_after_burn",
@@ -349,6 +364,18 @@ func WriteBurnRegressionObservationsCSV(
 				observation.
 					LastReplayedCursor,
 			)
+
+		futureActiveLiquidityDelta := ""
+
+		if observation.
+			MarketControls.
+			FutureActiveLiquidityDeltaFromPostBurn != nil {
+			futureActiveLiquidityDelta =
+				observation.
+					MarketControls.
+					FutureActiveLiquidityDeltaFromPostBurn.
+					String()
+		}
 
 		rows = append(
 			rows,
@@ -468,6 +495,58 @@ func WriteBurnRegressionObservationsCSV(
 					String(),
 				observation.
 					FutureSqrtPriceX96.
+					String(),
+
+				strconv.FormatBool(
+					observation.
+						MarketControls.
+						Available,
+				),
+
+				strconv.Itoa(
+					observation.
+						MarketControls.
+						TickChange,
+				),
+
+				strconv.Itoa(
+					observation.
+						MarketControls.
+						AbsoluteTickChange,
+				),
+
+				observation.
+					MarketControls.
+					PriceReturnBps.
+					String(),
+
+				observation.
+					MarketControls.
+					AbsolutePriceReturnBps.
+					String(),
+
+				string(
+					observation.
+						MarketControls.
+						FutureRangeLocation,
+				),
+
+				strconv.FormatBool(
+					observation.
+						MarketControls.
+						FutureBurnRangeActive,
+				),
+
+				futureActiveLiquidityDelta,
+
+				observation.
+					MarketControls.
+					FutureActiveLiquidityChangeFractionFromPostBurn.
+					String(),
+
+				observation.
+					MarketControls.
+					FutureActiveLiquidityChangeBpsFromPostBurn.
 					String(),
 
 				observation.

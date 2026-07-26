@@ -70,6 +70,8 @@ type BurnRegressionObservation struct {
 
 	FutureActiveLiquidity *big.Int
 
+	MarketControls BurnRealizedMarketControls
+
 	RemovalFraction           decimal.Decimal
 	RangeActiveLiquidityShare decimal.Decimal
 	ActiveRemovalShare        decimal.Decimal
@@ -205,6 +207,10 @@ func (o BurnRegressionObservation) Validate() error {
 
 			FutureActiveLiquidity: cloneRegressionBigInt(
 				o.FutureActiveLiquidity,
+			),
+
+			MarketControls: cloneBurnRealizedMarketControls(
+				o.MarketControls,
 			),
 
 			ZeroForOne: cloneBurnRealizedDirectionalOutcome(
@@ -349,6 +355,41 @@ func (o BurnRegressionObservation) Validate() error {
 			"burn regression observation: one_for_zero: %w",
 			err,
 		)
+	}
+
+	if o.MarketControls.Available {
+		if o.MarketControls.ReferenceTick !=
+			o.CurrentTick {
+			return fmt.Errorf(
+				"burn regression observation: market-control reference tick=%d, current tick=%d",
+				o.MarketControls.ReferenceTick,
+				o.CurrentTick,
+			)
+		}
+
+		if o.MarketControls.
+			ReferenceSqrtPriceX96 == nil ||
+			o.MarketControls.
+				ReferenceSqrtPriceX96.
+				Cmp(
+					o.SqrtPriceX96BeforeBurn,
+				) != 0 {
+			return fmt.Errorf(
+				"burn regression observation: market-control reference sqrt price does not match pre-burn sqrt price",
+			)
+		}
+
+		if o.MarketControls.
+			PostBurnActiveLiquidity == nil ||
+			o.MarketControls.
+				PostBurnActiveLiquidity.
+				Cmp(
+					o.ActiveLiquidityAfterBurn,
+				) != 0 {
+			return fmt.Errorf(
+				"burn regression observation: market-control post-burn liquidity does not match observation",
+			)
+		}
 	}
 
 	return nil
@@ -901,6 +942,10 @@ func newBurnRegressionObservation(
 			FutureActiveLiquidity: cloneRegressionBigInt(
 				outcome.
 					FutureActiveLiquidity,
+			),
+
+			MarketControls: cloneBurnRealizedMarketControls(
+				outcome.MarketControls,
 			),
 
 			RemovalFraction: sample.RemovalFraction,

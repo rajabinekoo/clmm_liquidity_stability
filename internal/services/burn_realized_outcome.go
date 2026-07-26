@@ -56,6 +56,8 @@ type BurnRealizedHorizonOutcome struct {
 	FutureSqrtPriceX96    *big.Int
 	FutureActiveLiquidity *big.Int
 
+	MarketControls BurnRealizedMarketControls
+
 	ZeroForOne BurnRealizedDirectionalOutcome
 	OneForZero BurnRealizedDirectionalOutcome
 
@@ -393,6 +395,19 @@ func (s *BurnRealizedOutcomeService) Analyze(
 			continue
 		}
 
+		marketControls, err :=
+			buildBurnRealizedMarketControls(
+				req.Sample,
+				futurePool,
+			)
+		if err != nil {
+			return BurnRealizedOutcomeReport{}, fmt.Errorf(
+				"analyze burn realized outcome: horizon=%s build market controls: %w",
+				horizon.Label,
+				err,
+			)
+		}
+
 		zeroForOne, err :=
 			s.analyzeDirection(
 				ctx,
@@ -459,6 +474,10 @@ func (s *BurnRealizedOutcomeService) Analyze(
 
 				FutureActiveLiquidity: new(big.Int).Set(
 					futurePool.Liquidity,
+				),
+
+				MarketControls: cloneBurnRealizedMarketControls(
+					marketControls,
 				),
 
 				ZeroForOne: zeroForOne,
@@ -971,6 +990,20 @@ func validateBurnRealizedHorizonOutcome(
 		outcome.FutureActiveLiquidity.Sign() <= 0 {
 		return fmt.Errorf(
 			"future active liquidity must be positive",
+		)
+	}
+
+	if err :=
+		validateBurnRealizedMarketControls(
+			burn,
+			outcome.FutureCurrentTick,
+			outcome.FutureSqrtPriceX96,
+			outcome.FutureActiveLiquidity,
+			outcome.MarketControls,
+		); err != nil {
+		return fmt.Errorf(
+			"market controls: %w",
+			err,
 		)
 	}
 
