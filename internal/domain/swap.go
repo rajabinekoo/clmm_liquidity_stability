@@ -247,3 +247,79 @@ func (s SwapEvent) ValidateForSimulation() error {
 
 	return nil
 }
+
+func (s SwapEvent) ValidateForObservation() error {
+	if strings.TrimSpace(s.ID) == "" {
+		return fmt.Errorf(
+			"swap ID is required",
+		)
+	}
+
+	if strings.TrimSpace(s.PoolAddress) == "" {
+		return fmt.Errorf(
+			"swap pool address is required",
+		)
+	}
+
+	if s.BlockNumber == 0 {
+		return fmt.Errorf(
+			"swap block number must be positive",
+		)
+	}
+
+	if s.LogIndex < 0 {
+		return fmt.Errorf(
+			"swap log index must not be negative",
+		)
+	}
+
+	if s.Amount0Raw == nil {
+		return fmt.Errorf(
+			"swap amount0 is nil",
+		)
+	}
+
+	if s.Amount1Raw == nil {
+		return fmt.Errorf(
+			"swap amount1 is nil",
+		)
+	}
+
+	if s.SqrtPriceX96After == nil ||
+		s.SqrtPriceX96After.Sign() <= 0 {
+		return fmt.Errorf(
+			"swap sqrt price after must be positive",
+		)
+	}
+
+	amount0Sign := s.Amount0Raw.Sign()
+	amount1Sign := s.Amount1Raw.Sign()
+
+	if amount0Sign == 0 &&
+		amount1Sign == 0 {
+		return fmt.Errorf(
+			"swap amounts must not both be zero",
+		)
+	}
+
+	// Token0 is input, Token1 is output.
+	zeroForOne :=
+		amount0Sign > 0 &&
+			amount1Sign <= 0
+
+	// Token1 is input, Token0 is output.
+	oneForZero :=
+		amount1Sign > 0 &&
+			amount0Sign <= 0
+
+	if !zeroForOne &&
+		!oneForZero {
+		return fmt.Errorf(
+			"swap amounts have invalid signs: amount0=%s amount1=%s",
+			s.Amount0Raw,
+			s.Amount1Raw,
+		)
+	}
+
+	return nil
+}

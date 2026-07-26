@@ -367,3 +367,67 @@ func assertProviderBigIntEqual(
 		)
 	}
 }
+
+func TestMapRawSwapAllowsZeroOutputForObservation(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	swap, err := mapRawSwap(
+		"0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+		rawSwap{
+			ID: "zero-output-swap",
+
+			Amount0: "0.000001",
+			Amount1: "0",
+
+			SqrtPriceX96: "79228162514264337593543950336",
+			Tick:         "0",
+			LogIndex:     "1",
+			Timestamp:    "1700000000",
+
+			Transaction: rawTransaction{
+				ID: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+
+				BlockNumber: graphNumber("123"),
+			},
+		},
+		6,
+		18,
+	)
+	if err != nil {
+		t.Fatalf(
+			"mapRawSwap() error = %v",
+			err,
+		)
+	}
+
+	if err := swap.ValidateForObservation(); err != nil {
+		t.Fatalf(
+			"ValidateForObservation() error = %v",
+			err,
+		)
+	}
+
+	if swap.Amount0Raw.Cmp(
+		big.NewInt(1),
+	) != 0 {
+		t.Fatalf(
+			"Amount0Raw = %s, want 1",
+			swap.Amount0Raw,
+		)
+	}
+
+	if swap.Amount1Raw.Sign() != 0 {
+		t.Fatalf(
+			"Amount1Raw = %s, want 0",
+			swap.Amount1Raw,
+		)
+	}
+
+	if err := swap.ValidateForSimulation(); err == nil {
+		t.Fatal(
+			"ValidateForSimulation() error = nil, want non-nil",
+		)
+	}
+}

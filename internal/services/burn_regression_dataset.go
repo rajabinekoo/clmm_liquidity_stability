@@ -61,6 +61,8 @@ type BurnRegressionObservation struct {
 
 	LiquidityRemoved *big.Int
 
+	FlowControls BurnRealizedFlowControls
+
 	RangeLiquidityBeforeBurn *big.Int
 	RangeLiquidityAfterBurn  *big.Int
 
@@ -200,6 +202,10 @@ func (o BurnRegressionObservation) Validate() error {
 			FutureBlock: o.FutureBlock,
 
 			FutureCurrentTick: o.FutureCurrentTick,
+
+			FlowControls: cloneBurnRealizedFlowControls(
+				o.FlowControls,
+			),
 
 			FutureSqrtPriceX96: cloneRegressionBigInt(
 				o.FutureSqrtPriceX96,
@@ -392,6 +398,50 @@ func (o BurnRegressionObservation) Validate() error {
 		}
 	}
 
+	if o.FlowControls.Available {
+		if o.FlowControls.ReferenceTick !=
+			o.CurrentTick {
+			return fmt.Errorf(
+				"burn regression observation: flow-control reference tick=%d, current tick=%d",
+				o.FlowControls.ReferenceTick,
+				o.CurrentTick,
+			)
+		}
+
+		if o.FlowControls.
+			ReferenceSqrtPriceX96 == nil ||
+			o.FlowControls.
+				ReferenceSqrtPriceX96.
+				Cmp(
+					o.SqrtPriceX96BeforeBurn,
+				) != 0 {
+			return fmt.Errorf(
+				"burn regression observation: flow-control reference sqrt price does not match pre-burn sqrt price",
+			)
+		}
+
+		if !o.FlowControls.
+			WindowStartCursor.
+			Equal(
+				o.Burn.Cursor,
+			) {
+			return fmt.Errorf(
+				"burn regression observation: flow-control start cursor=%s, burn cursor=%s",
+				o.FlowControls.WindowStartCursor,
+				o.Burn.Cursor,
+			)
+		}
+
+		if o.FlowControls.WindowEndBlock !=
+			o.FutureBlock {
+			return fmt.Errorf(
+				"burn regression observation: flow-control end block=%d, future block=%d",
+				o.FlowControls.WindowEndBlock,
+				o.FutureBlock,
+			)
+		}
+	}
+
 	return nil
 }
 
@@ -449,6 +499,8 @@ type BurnRealizedDatasetRequest struct {
 	Collection BurnSampleCollectionReport
 
 	Horizons []BurnOutcomeHorizon
+
+	RequireFlowControls bool
 
 	ZeroForOneAmountsIn []*big.Int
 	OneForZeroAmountsIn []*big.Int
@@ -644,6 +696,8 @@ func (s *BurnRealizedDatasetService) Build(
 
 					IndexedThrough: report.
 						OutcomeIndexedThrough,
+
+					RequireFlowControls: req.RequireFlowControls,
 
 					Horizons: append(
 						[]BurnOutcomeHorizon(nil),
@@ -857,6 +911,10 @@ func newBurnRegressionObservation(
 		BurnRegressionObservation{
 			Burn: cloneBurnCandidate(
 				sample.Burn,
+			),
+
+			FlowControls: cloneBurnRealizedFlowControls(
+				outcome.FlowControls,
 			),
 
 			HorizonLabel: outcome.HorizonLabel,

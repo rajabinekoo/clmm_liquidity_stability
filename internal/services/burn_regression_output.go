@@ -340,6 +340,42 @@ func WriteBurnRegressionObservationsCSV(
 			"total_realized_delta_piauc_bps",
 			"total_realized_deterioration_bps",
 			"max_directional_deterioration_bps",
+
+			"flow_controls_available",
+			"flow_window_start_block",
+			"flow_window_start_log_index",
+			"flow_window_end_block",
+
+			"flow_swap_count",
+			"flow_zero_for_one_swap_count",
+			"flow_one_for_zero_swap_count",
+
+			"flow_token0_input_raw",
+			"flow_token0_output_raw",
+			"flow_token1_input_raw",
+			"flow_token1_output_raw",
+
+			"flow_gross_token0_volume_raw",
+			"flow_gross_token1_volume_raw",
+
+			"flow_liquidity_event_count",
+			"flow_mint_event_count",
+			"flow_burn_event_count",
+
+			"flow_gross_mint_liquidity",
+			"flow_gross_burn_liquidity",
+			"flow_net_liquidity_flow",
+
+			"flow_tick_path_start_tick",
+			"flow_tick_path_end_tick",
+			"flow_tick_path_min_tick",
+			"flow_tick_path_max_tick",
+			"flow_tick_path_range",
+			"flow_tick_path_total_variation",
+			"flow_tick_path_quadratic_variation",
+			"flow_tick_path_max_absolute_step",
+
+			"flow_last_swap_sqrt_price_x96",
 		}
 
 	rows :=
@@ -374,6 +410,18 @@ func WriteBurnRegressionObservationsCSV(
 				observation.
 					MarketControls.
 					FutureActiveLiquidityDeltaFromPostBurn.
+					String()
+		}
+
+		flowLastSwapSqrtPrice := ""
+
+		if observation.
+			FlowControls.
+			LastSwapSqrtPriceX96 != nil {
+			flowLastSwapSqrtPrice =
+				observation.
+					FlowControls.
+					LastSwapSqrtPriceX96.
 					String()
 		}
 
@@ -672,6 +720,132 @@ func WriteBurnRegressionObservationsCSV(
 				observation.
 					MaxDirectionalDeteriorationBps.
 					String(),
+
+				strconv.FormatBool(
+					observation.
+						FlowControls.
+						Available,
+				),
+
+				strconv.FormatUint(
+					observation.
+						FlowControls.
+						WindowStartCursor.
+						BlockNumber,
+					10,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						WindowStartCursor.
+						LogIndex,
+				),
+
+				strconv.FormatUint(
+					observation.
+						FlowControls.
+						WindowEndBlock,
+					10,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						SwapCount,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						ZeroForOneSwapCount,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						OneForZeroSwapCount,
+				),
+
+				observation.FlowControls.Token0InputRaw.String(),
+				observation.FlowControls.Token0OutputRaw.String(),
+				observation.FlowControls.Token1InputRaw.String(),
+				observation.FlowControls.Token1OutputRaw.String(),
+
+				observation.FlowControls.GrossToken0VolumeRaw.String(),
+				observation.FlowControls.GrossToken1VolumeRaw.String(),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						LiquidityEventCount,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						MintEventCount,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						BurnEventCount,
+				),
+
+				observation.FlowControls.GrossMintLiquidity.String(),
+				observation.FlowControls.GrossBurnLiquidity.String(),
+				observation.FlowControls.NetLiquidityFlow.String(),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						TickPathStartTick,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						TickPathEndTick,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						TickPathMinTick,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						TickPathMaxTick,
+				),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						TickPathRange,
+				),
+
+				strconv.FormatUint(
+					observation.
+						FlowControls.
+						TickPathTotalVariation,
+					10,
+				),
+
+				observation.
+					FlowControls.
+					TickPathQuadraticVariation.
+					String(),
+
+				strconv.Itoa(
+					observation.
+						FlowControls.
+						TickPathMaxAbsoluteStep,
+				),
+
+				flowLastSwapSqrtPrice,
 			},
 		)
 	}

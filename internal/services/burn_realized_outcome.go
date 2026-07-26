@@ -58,6 +58,8 @@ type BurnRealizedHorizonOutcome struct {
 
 	MarketControls BurnRealizedMarketControls
 
+	FlowControls BurnRealizedFlowControls
+
 	ZeroForOne BurnRealizedDirectionalOutcome
 	OneForZero BurnRealizedDirectionalOutcome
 
@@ -120,6 +122,8 @@ type BurnRealizedOutcomeRequest struct {
 	// indexed head. A non-zero value means that the supplied checkpoint must
 	// be used without reading a newer head.
 	IndexedThrough uint64
+
+	RequireFlowControls bool
 
 	Horizons []BurnOutcomeHorizon
 
@@ -282,6 +286,42 @@ func (s *BurnRealizedOutcomeService) Analyze(
 			),
 		}
 
+	maximumEligibleFutureBlock :=
+		req.Sample.Burn.Cursor.BlockNumber
+
+	for _, horizon := range horizons {
+		futureBlock :=
+			req.Sample.Burn.Cursor.BlockNumber +
+				horizon.Blocks
+
+		if futureBlock <= indexedThrough &&
+			futureBlock >
+				maximumEligibleFutureBlock {
+			maximumEligibleFutureBlock =
+				futureBlock
+		}
+	}
+
+	flowEvents :=
+		burnRealizedFlowEventSet{}
+
+	if maximumEligibleFutureBlock >
+		req.Sample.Burn.Cursor.BlockNumber {
+		flowEvents, err =
+			s.loadBurnRealizedFlowEvents(
+				ctx,
+				req.Sample.Burn,
+				maximumEligibleFutureBlock,
+				req.RequireFlowControls,
+			)
+		if err != nil {
+			return BurnRealizedOutcomeReport{}, fmt.Errorf(
+				"analyze burn realized outcome: load flow events: %w",
+				err,
+			)
+		}
+	}
+
 	for _, horizon := range horizons {
 		if err := ctx.Err(); err != nil {
 			return BurnRealizedOutcomeReport{}, err
@@ -408,6 +448,20 @@ func (s *BurnRealizedOutcomeService) Analyze(
 			)
 		}
 
+		flowControls, err :=
+			buildBurnRealizedFlowControls(
+				req.Sample,
+				futurePool,
+				flowEvents,
+			)
+		if err != nil {
+			return BurnRealizedOutcomeReport{}, fmt.Errorf(
+				"analyze burn realized outcome: horizon=%s build flow controls: %w",
+				horizon.Label,
+				err,
+			)
+		}
+
 		zeroForOne, err :=
 			s.analyzeDirection(
 				ctx,
@@ -478,6 +532,10 @@ func (s *BurnRealizedOutcomeService) Analyze(
 
 				MarketControls: cloneBurnRealizedMarketControls(
 					marketControls,
+				),
+
+				FlowControls: cloneBurnRealizedFlowControls(
+					flowControls,
 				),
 
 				ZeroForOne: zeroForOne,
@@ -1003,6 +1061,20 @@ func validateBurnRealizedHorizonOutcome(
 		); err != nil {
 		return fmt.Errorf(
 			"market controls: %w",
+			err,
+		)
+	}
+
+	if err :=
+		validateBurnRealizedFlowControls(
+			burn,
+			outcome.FutureBlock,
+			outcome.FutureCurrentTick,
+			outcome.FutureSqrtPriceX96,
+			outcome.FlowControls,
+		); err != nil {
+		return fmt.Errorf(
+			"flow controls: %w",
 			err,
 		)
 	}

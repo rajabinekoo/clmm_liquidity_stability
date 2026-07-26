@@ -262,9 +262,12 @@ func mapRawSwap(
 		TickAfter: tick,
 	}
 
-	if err := event.Validate(); err != nil {
+	// Mapping validates observability, not replayability.
+	// Tiny real swaps may have a zero output and must remain available
+	// for flow-volume and tick-path controls.
+	if err := event.ValidateForObservation(); err != nil {
 		return domain.SwapEvent{}, fmt.Errorf(
-			"validate mapped swap: %w",
+			"validate mapped swap for observation: %w",
 			err,
 		)
 	}

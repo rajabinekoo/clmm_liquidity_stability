@@ -345,3 +345,41 @@ func assertDomainBigIntEqual(
 		)
 	}
 }
+
+func TestSwapEventValidateForObservationAllowsZeroOutput(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	swap :=
+		SwapEvent{
+			ID: "swap-1",
+
+			PoolAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+
+			BlockNumber: 100,
+
+			LogIndex: 1,
+
+			Amount0Raw: big.NewInt(100),
+
+			Amount1Raw: big.NewInt(0),
+
+			SqrtPriceX96After: big.NewInt(1_000),
+		}
+
+	if err :=
+		swap.ValidateForObservation(); err != nil {
+		t.Fatalf(
+			"ValidateForObservation() error = %v",
+			err,
+		)
+	}
+
+	if err :=
+		swap.ValidateForSimulation(); err == nil {
+		t.Fatal(
+			"ValidateForSimulation() error = nil, want non-nil",
+		)
+	}
+}
