@@ -1619,6 +1619,11 @@ func WriteBurnSwapReplayAuditCSV(
 			"amount_out_raw",
 
 			"sqrt_price_x96_after",
+			"simulated_sqrt_price_x96_after",
+			"sqrt_price_abs_diff_raw",
+			"sqrt_price_exact",
+			"sqrt_price_within_tolerance",
+
 			"tick_after",
 
 			"swap_steps",
@@ -1722,6 +1727,22 @@ func WriteBurnSwapReplayAuditCSV(
 						replay.
 							SqrtPriceX96After.
 							String(),
+
+						replay.
+							SimulatedSqrtPriceX96After.
+							String(),
+
+						replay.
+							SqrtPriceAbsDiffRaw.
+							String(),
+
+						strconv.FormatBool(
+							replay.SqrtPriceExact,
+						),
+
+						strconv.FormatBool(
+							replay.SqrtPriceWithinTolerance,
+						),
 
 						strconv.Itoa(
 							replay.TickAfter,

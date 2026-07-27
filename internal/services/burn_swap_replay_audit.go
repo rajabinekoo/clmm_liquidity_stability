@@ -31,7 +31,13 @@ type BurnSwapReplayAudit struct {
 	AmountOutRaw *big.Int
 
 	SqrtPriceX96After *big.Int
-	TickAfter         int
+
+	SimulatedSqrtPriceX96After *big.Int
+	SqrtPriceAbsDiffRaw        *big.Int
+	SqrtPriceExact             bool
+	SqrtPriceWithinTolerance   bool
+
+	TickAfter int
 
 	SwapSteps    int
 	CrossedTicks int
@@ -90,6 +96,54 @@ func (a BurnSwapReplayAudit) Validate() error {
 		)
 	}
 
+	if a.SimulatedSqrtPriceX96After == nil ||
+		a.SimulatedSqrtPriceX96After.Sign() <= 0 {
+		return fmt.Errorf(
+			"burn swap replay audit: simulated sqrt price after must be positive",
+		)
+	}
+
+	expectedSqrtDifference :=
+		new(big.Int).Sub(
+			a.SimulatedSqrtPriceX96After,
+			a.SqrtPriceX96After,
+		)
+
+	expectedSqrtDifference.Abs(
+		expectedSqrtDifference,
+	)
+
+	if a.SqrtPriceAbsDiffRaw == nil ||
+		a.SqrtPriceAbsDiffRaw.Sign() < 0 ||
+		a.SqrtPriceAbsDiffRaw.Cmp(
+			expectedSqrtDifference,
+		) != 0 {
+		return fmt.Errorf(
+			"burn swap replay audit: sqrt price absolute difference=%v, expected=%s",
+			a.SqrtPriceAbsDiffRaw,
+			expectedSqrtDifference,
+		)
+	}
+
+	expectedSqrtExact :=
+		expectedSqrtDifference.Sign() == 0
+
+	if a.SqrtPriceExact !=
+		expectedSqrtExact {
+		return fmt.Errorf(
+			"burn swap replay audit: sqrt price exact=%t, expected=%t",
+			a.SqrtPriceExact,
+			expectedSqrtExact,
+		)
+	}
+
+	if a.SqrtPriceExact &&
+		!a.SqrtPriceWithinTolerance {
+		return fmt.Errorf(
+			"burn swap replay audit: exact sqrt price must be within tolerance",
+		)
+	}
+
 	if a.SwapSteps <= 0 {
 		return fmt.Errorf(
 			"burn swap replay audit: swap steps must be positive",
@@ -142,6 +196,18 @@ func cloneBurnSwapReplayAudits(
 				SqrtPriceX96After: cloneBigInt(
 					value.SqrtPriceX96After,
 				),
+
+				SimulatedSqrtPriceX96After: cloneBigInt(
+					value.SimulatedSqrtPriceX96After,
+				),
+
+				SqrtPriceAbsDiffRaw: cloneBigInt(
+					value.SqrtPriceAbsDiffRaw,
+				),
+
+				SqrtPriceExact: value.SqrtPriceExact,
+
+				SqrtPriceWithinTolerance: value.SqrtPriceWithinTolerance,
 
 				TickAfter: value.TickAfter,
 

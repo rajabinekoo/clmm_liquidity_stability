@@ -204,6 +204,27 @@ func (s *LiquidityImpactService) AnalyzeJointRemovalScenarios(
 			return nil, err
 		}
 
+		if spec.Kind ==
+			JointRemovalScenarioTopNByLSIS &&
+			spec.TopCount >
+				len(req.BaseReport.Positions) {
+			report.Scenarios =
+				append(
+					report.Scenarios,
+					jointRemovalUnavailableScenario(
+						req,
+						spec,
+						fmt.Sprintf(
+							"requested top %d positions but only %d are available",
+							spec.TopCount,
+							len(req.BaseReport.Positions),
+						),
+					),
+				)
+
+			continue
+		}
+
 		selected, err :=
 			selectJointRemovalPositions(
 				req.BaseReport.Positions,
@@ -241,6 +262,65 @@ func (s *LiquidityImpactService) AnalyzeJointRemovalScenarios(
 	}
 
 	return report, nil
+}
+
+func jointRemovalUnavailableScenario(
+	req JointRemovalRequest,
+	spec jointRemovalScenarioSpec,
+	reason string,
+) JointRemovalScenarioResult {
+	result :=
+		JointRemovalScenarioResult{
+			ScenarioID: spec.ID,
+
+			Kind: spec.Kind,
+
+			RequestedPositionCount: spec.TopCount,
+
+			RequestedActiveLiquidityShareBps: spec.TargetActiveLiquidityShareBps,
+
+			RemovedLiquidity: big.NewInt(0),
+
+			CounterfactualActiveLiquidity: cloneBigInt(
+				req.Pool.Liquidity,
+			),
+
+			Skipped: true,
+
+			SkipReason: reason,
+		}
+
+	if req.BaseReport != nil {
+		if req.BaseReport.ZeroForOneReport != nil {
+			base :=
+				req.BaseReport.
+					ZeroForOneReport.
+					BaseSummary.
+					PriceImpactAUCBps
+
+			result.ZeroForOne.BaseAUCBps =
+				base
+
+			result.ZeroForOne.CounterfactualAUCBps =
+				base
+		}
+
+		if req.BaseReport.OneForZeroReport != nil {
+			base :=
+				req.BaseReport.
+					OneForZeroReport.
+					BaseSummary.
+					PriceImpactAUCBps
+
+			result.OneForZero.BaseAUCBps =
+				base
+
+			result.OneForZero.CounterfactualAUCBps =
+				base
+		}
+	}
+
+	return result
 }
 
 func (s *LiquidityImpactService) analyzeJointRemovalScenario(

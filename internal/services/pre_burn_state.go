@@ -676,6 +676,12 @@ const (
 	observedSwapReplayExactOutput observedSwapReplayMode = "exact_output"
 
 	observedSwapReplayBoth observedSwapReplayMode = "exact_input_and_exact_output"
+
+	// Swap events expose integer token deltas, not the original amountSpecified.
+	// Around integer-rounding boundaries, the same observed deltas can correspond
+	// to a tiny interval of valid sqrtPriceX96 values. We accept only an
+	// economically negligible relative sqrt difference: 1e-16 = 1e-12 bps.
+	observedSwapSqrtRelativeToleranceDenominator int64 = 10_000_000_000_000_000
 )
 
 type observedSwapSimulation struct {
@@ -783,29 +789,21 @@ func replayObservedSwap(
 
 	if exactInputMatches &&
 		exactOutputMatches {
-		if !sameObservedSwapFinalState(
-			exactInput,
-			exactOutput,
-		) {
+		var err error
+		selected, err =
+			selectObservedSwapSimulation(
+				exactInput,
+				exactOutput,
+				swap,
+			)
+		if err != nil {
 			return nil,
 				BurnSwapReplayAudit{},
 				fmt.Errorf(
-					"exact-input and exact-output replay both match observed amounts but disagree on final state: exact_input={%s} exact_output={%s}",
-					describeObservedSwapSimulation(
-						exactInput,
-						nil,
-						swap,
-					),
-					describeObservedSwapSimulation(
-						exactOutput,
-						nil,
-						swap,
-					),
+					"select protocol mode: %w",
+					err,
 				)
 		}
-
-		selected.Mode =
-			observedSwapReplayBoth
 	} else if exactOutputMatches {
 		selected =
 			exactOutput
@@ -826,6 +824,16 @@ func replayObservedSwap(
 		new(big.Int).Set(
 			selected.LiquidityAfter,
 		)
+
+	sqrtDifference :=
+		new(big.Int).Sub(
+			selected.SqrtPriceAfterX96,
+			swap.SqrtPriceX96After,
+		)
+
+	sqrtDifference.Abs(
+		sqrtDifference,
+	)
 
 	audit :=
 		BurnSwapReplayAudit{
@@ -852,6 +860,21 @@ func replayObservedSwap(
 				swap.SqrtPriceX96After,
 			),
 
+			SimulatedSqrtPriceX96After: cloneBigInt(
+				selected.SqrtPriceAfterX96,
+			),
+
+			SqrtPriceAbsDiffRaw: cloneBigInt(
+				sqrtDifference,
+			),
+
+			SqrtPriceExact: sqrtDifference.Sign() == 0,
+
+			SqrtPriceWithinTolerance: observedSwapSimulationSqrtWithinTolerance(
+				selected,
+				swap,
+			),
+
 			TickAfter: swap.TickAfter,
 
 			SwapSteps: selected.SwapSteps,
@@ -871,6 +894,108 @@ func replayObservedSwap(
 	return &next,
 		audit,
 		nil
+}
+
+func selectObservedSwapSimulation(
+	exactInput observedSwapSimulation,
+	exactOutput observedSwapSimulation,
+	swap domain.SwapEvent,
+) (observedSwapSimulation, error) {
+	if sameObservedSwapFinalState(
+		exactInput,
+		exactOutput,
+	) {
+		selected :=
+			exactInput
+
+		selected.Mode =
+			observedSwapReplayBoth
+
+		return selected, nil
+	}
+
+	exactInputDifference, err :=
+		observedSwapSimulationSqrtAbsDifference(
+			exactInput,
+			swap,
+		)
+	if err != nil {
+		return observedSwapSimulation{},
+			fmt.Errorf(
+				"exact-input sqrt difference: %w",
+				err,
+			)
+	}
+
+	exactOutputDifference, err :=
+		observedSwapSimulationSqrtAbsDifference(
+			exactOutput,
+			swap,
+		)
+	if err != nil {
+		return observedSwapSimulation{},
+			fmt.Errorf(
+				"exact-output sqrt difference: %w",
+				err,
+			)
+	}
+
+	switch exactInputDifference.Cmp(
+		exactOutputDifference,
+	) {
+	case -1:
+		return exactInput, nil
+
+	case 1:
+		return exactOutput, nil
+
+	default:
+		return observedSwapSimulation{},
+			fmt.Errorf(
+				"exact-input and exact-output replay are equally close to the observed sqrt price but disagree on final state: exact_input={%s} exact_output={%s}",
+				describeObservedSwapSimulation(
+					exactInput,
+					nil,
+					swap,
+				),
+				describeObservedSwapSimulation(
+					exactOutput,
+					nil,
+					swap,
+				),
+			)
+	}
+}
+
+func observedSwapSimulationSqrtAbsDifference(
+	simulation observedSwapSimulation,
+	swap domain.SwapEvent,
+) (*big.Int, error) {
+	if simulation.SqrtPriceAfterX96 == nil {
+		return nil, fmt.Errorf(
+			"simulated sqrt price is nil",
+		)
+	}
+
+	if swap.SqrtPriceX96After == nil ||
+		swap.SqrtPriceX96After.Sign() <= 0 {
+		return nil, fmt.Errorf(
+			"observed sqrt price is invalid: %v",
+			swap.SqrtPriceX96After,
+		)
+	}
+
+	difference :=
+		new(big.Int).Sub(
+			simulation.SqrtPriceAfterX96,
+			swap.SqrtPriceX96After,
+		)
+
+	difference.Abs(
+		difference,
+	)
+
+	return difference, nil
 }
 
 func simulateObservedSwapAsExactInput(
@@ -1122,6 +1247,20 @@ func observedSwapSimulationMatches(
 	simulation observedSwapSimulation,
 	swap domain.SwapEvent,
 ) bool {
+	return observedSwapSimulationAmountsAndTickMatch(
+		simulation,
+		swap,
+	) &&
+		observedSwapSimulationSqrtWithinTolerance(
+			simulation,
+			swap,
+		)
+}
+
+func observedSwapSimulationAmountsAndTickMatch(
+	simulation observedSwapSimulation,
+	swap domain.SwapEvent,
+) bool {
 	return simulation.AmountIn != nil &&
 		simulation.AmountOut != nil &&
 		simulation.SqrtPriceAfterX96 != nil &&
@@ -1132,11 +1271,45 @@ func observedSwapSimulationMatches(
 		simulation.AmountOut.Cmp(
 			swap.AmountOutRaw(),
 		) == 0 &&
-		simulation.SqrtPriceAfterX96.Cmp(
-			swap.SqrtPriceX96After,
-		) == 0 &&
 		simulation.TickAfter ==
 			swap.TickAfter
+}
+
+func observedSwapSimulationSqrtWithinTolerance(
+	simulation observedSwapSimulation,
+	swap domain.SwapEvent,
+) bool {
+	if simulation.SqrtPriceAfterX96 == nil ||
+		swap.SqrtPriceX96After == nil ||
+		swap.SqrtPriceX96After.Sign() <= 0 {
+		return false
+	}
+
+	difference :=
+		new(big.Int).Sub(
+			simulation.SqrtPriceAfterX96,
+			swap.SqrtPriceX96After,
+		)
+
+	difference.Abs(
+		difference,
+	)
+
+	if difference.Sign() == 0 {
+		return true
+	}
+
+	scaledDifference :=
+		new(big.Int).Mul(
+			difference,
+			big.NewInt(
+				observedSwapSqrtRelativeToleranceDenominator,
+			),
+		)
+
+	return scaledDifference.Cmp(
+		swap.SqrtPriceX96After,
+	) <= 0
 }
 
 func sameObservedSwapFinalState(

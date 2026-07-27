@@ -173,3 +173,70 @@ func jointRemovalTestPositions() []BidirectionalPositionImpact {
 
 	return result
 }
+
+func TestJointRemovalUnavailableScenarioKeepsSnapshotShape(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	pool :=
+		&domain.ReconstructedPool{
+			Liquidity: big.NewInt(100),
+		}
+
+	result :=
+		jointRemovalUnavailableScenario(
+			JointRemovalRequest{
+				Pool: pool,
+
+				BaseReport: &BidirectionalLiquidityImpactReport{},
+			},
+			jointRemovalScenarioSpec{
+				ID: "top_5_by_lsis",
+
+				Kind: JointRemovalScenarioTopNByLSIS,
+
+				TopCount: 5,
+			},
+			"requested top 5 positions but only 4 are available",
+		)
+
+	if !result.Skipped {
+		t.Fatal(
+			"Skipped = false, want true",
+		)
+	}
+
+	if result.ScenarioID !=
+		"top_5_by_lsis" {
+		t.Fatalf(
+			"ScenarioID = %q, want top_5_by_lsis",
+			result.ScenarioID,
+		)
+	}
+
+	if result.RequestedPositionCount != 5 {
+		t.Fatalf(
+			"RequestedPositionCount = %d, want 5",
+			result.RequestedPositionCount,
+		)
+	}
+
+	if result.RemovedLiquidity == nil ||
+		result.RemovedLiquidity.Sign() != 0 {
+		t.Fatalf(
+			"RemovedLiquidity = %v, want zero",
+			result.RemovedLiquidity,
+		)
+	}
+
+	if result.CounterfactualActiveLiquidity == nil ||
+		result.CounterfactualActiveLiquidity.Cmp(
+			big.NewInt(100),
+		) != 0 {
+		t.Fatalf(
+			"CounterfactualActiveLiquidity = %v, want 100",
+			result.CounterfactualActiveLiquidity,
+		)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
@@ -418,6 +419,160 @@ func TestBurnRealizedFlowChunkEnd(
 					)
 				}
 			},
+		)
+	}
+}
+
+func TestFetchBurnRealizedFlowSwapsCollapsesEquivalentDuplicateCursor(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const poolAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	first := burnFlowTestSwap(
+		poolAddress,
+		120,
+		7,
+		"duplicate-a",
+	)
+
+	duplicate := first
+	duplicate.ID = "duplicate-b"
+
+	provider :=
+		&fakeBurnRealizedFlowProvider{
+			pages: map[string][]domain.SwapEvent{
+				burnFlowTestPageKey(
+					100,
+					200,
+					"",
+				): {
+					first,
+					duplicate,
+					burnFlowTestSwap(
+						poolAddress,
+						130,
+						1,
+						"next-swap",
+					),
+				},
+			},
+		}
+
+	swaps, err :=
+		fetchBurnRealizedFlowSwaps(
+			context.Background(),
+			provider,
+			domain.Pool{
+				Address: poolAddress,
+
+				Token0Decimals: 6,
+
+				Token1Decimals: 18,
+			},
+			domain.EventCursor{
+				BlockNumber: 100,
+
+				LogIndex: 5,
+			},
+			200,
+			1_000,
+		)
+	if err != nil {
+		t.Fatalf(
+			"fetchBurnRealizedFlowSwaps() error = %v",
+			err,
+		)
+	}
+
+	if len(swaps) != 2 {
+		t.Fatalf(
+			"swap count = %d, want 2 after duplicate collapse",
+			len(swaps),
+		)
+	}
+
+	if swaps[0].ID != "duplicate-a" {
+		t.Fatalf(
+			"canonical duplicate ID = %q, want duplicate-a",
+			swaps[0].ID,
+		)
+	}
+
+	if swaps[1].ID != "next-swap" {
+		t.Fatalf(
+			"second swap ID = %q, want next-swap",
+			swaps[1].ID,
+		)
+	}
+}
+
+func TestFetchBurnRealizedFlowSwapsRejectsConflictingDuplicateCursor(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const poolAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	first := burnFlowTestSwap(
+		poolAddress,
+		120,
+		7,
+		"duplicate-a",
+	)
+
+	conflicting := first
+	conflicting.ID = "duplicate-b"
+	conflicting.Amount1Raw = big.NewInt(-201)
+
+	provider :=
+		&fakeBurnRealizedFlowProvider{
+			pages: map[string][]domain.SwapEvent{
+				burnFlowTestPageKey(
+					100,
+					200,
+					"",
+				): {
+					first,
+					conflicting,
+				},
+			},
+		}
+
+	_, err :=
+		fetchBurnRealizedFlowSwaps(
+			context.Background(),
+			provider,
+			domain.Pool{
+				Address: poolAddress,
+
+				Token0Decimals: 6,
+
+				Token1Decimals: 18,
+			},
+			domain.EventCursor{
+				BlockNumber: 100,
+
+				LogIndex: 5,
+			},
+			200,
+			1_000,
+		)
+
+	if err == nil {
+		t.Fatal(
+			"fetchBurnRealizedFlowSwaps() error = nil, want conflicting duplicate error",
+		)
+	}
+
+	if !strings.Contains(
+		err.Error(),
+		"conflicting swaps share cursor 120:7",
+	) {
+		t.Fatalf(
+			"fetchBurnRealizedFlowSwaps() error = %q, want conflicting cursor detail",
+			err,
 		)
 	}
 }

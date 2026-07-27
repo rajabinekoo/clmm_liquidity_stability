@@ -289,70 +289,190 @@ func fetchBurnRealizedFlowSwaps(
 		},
 	)
 
-	seenIDs :=
-		make(
-			map[string]struct{},
-			len(result),
+	normalized, err :=
+		normalizeBurnRealizedFlowSwaps(
+			result,
+			burnCursor,
+			throughBlock,
 		)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"fetch burn realized flow swaps: %w",
+			err,
+		)
+	}
 
-	var previousCursor *domain.EventCursor
+	return normalized, nil
+}
 
-	for index, swap := range result {
-		if _, exists :=
-			seenIDs[swap.ID]; exists {
+// normalizeBurnRealizedFlowSwaps validates the ordered stream and collapses
+// duplicate representations of the same on-chain log.
+//
+// Ethereum log indexes are block-global, so two Swap records with the same
+// block number and log index cannot represent two distinct on-chain events.
+// Some Graph indexers can nevertheless expose the same log more than once
+// under different entity IDs. Equivalent duplicates are safe to collapse;
+// conflicting payloads remain a hard error because silently choosing one would
+// corrupt the empirical flow controls.
+func normalizeBurnRealizedFlowSwaps(
+	values []domain.SwapEvent,
+	burnCursor domain.EventCursor,
+	throughBlock uint64,
+) ([]domain.SwapEvent, error) {
+	normalized := make(
+		[]domain.SwapEvent,
+		0,
+		len(values),
+	)
+
+	seenByID := make(
+		map[string]domain.SwapEvent,
+		len(values),
+	)
+
+	for index, swap := range values {
+		if err := swap.ValidateForObservation(); err != nil {
 			return nil, fmt.Errorf(
-				"fetch burn realized flow swaps: duplicate swap ID %q",
+				"swap index=%d id=%q: %w",
+				index,
 				swap.ID,
+				err,
 			)
 		}
 
-		seenIDs[swap.ID] =
-			struct{}{}
+		cursor := swap.Cursor()
 
-		cursor :=
-			swap.Cursor()
-
-		if !cursor.After(
-			burnCursor,
-		) {
+		if !cursor.After(burnCursor) {
 			return nil, fmt.Errorf(
-				"fetch burn realized flow swaps: swap %s cursor %s is not after burn cursor %s",
+				"swap %s cursor %s is not after burn cursor %s",
 				swap.ID,
 				cursor,
 				burnCursor,
 			)
 		}
 
-		if cursor.BlockNumber >
-			throughBlock {
+		if cursor.BlockNumber > throughBlock {
 			return nil, fmt.Errorf(
-				"fetch burn realized flow swaps: swap %s cursor %s exceeds through block %d",
+				"swap %s cursor %s exceeds through block %d",
 				swap.ID,
 				cursor,
 				throughBlock,
 			)
 		}
 
-		if previousCursor != nil &&
-			!previousCursor.Before(
-				cursor,
-			) {
-			return nil, fmt.Errorf(
-				"fetch burn realized flow swaps: non-increasing cursor at index %d: previous=%s current=%s",
-				index,
-				previousCursor,
-				cursor,
-			)
+		normalizedID := strings.TrimSpace(swap.ID)
+
+		if previous, exists := seenByID[normalizedID]; exists {
+			if !burnRealizedFlowSwapsEquivalent(previous, swap) {
+				return nil, fmt.Errorf(
+					"duplicate swap ID %q has conflicting payloads: first={%s} current={%s}",
+					normalizedID,
+					burnRealizedFlowSwapFingerprint(previous),
+					burnRealizedFlowSwapFingerprint(swap),
+				)
+			}
+
+			continue
 		}
 
-		cursorCopy :=
-			cursor
+		seenByID[normalizedID] = swap
 
-		previousCursor =
-			&cursorCopy
+		if len(normalized) > 0 {
+			previous := normalized[len(normalized)-1]
+			previousCursor := previous.Cursor()
+
+			switch cursor.Compare(previousCursor) {
+			case -1:
+				return nil, fmt.Errorf(
+					"decreasing cursor at index %d: previous=%s current=%s",
+					index,
+					previousCursor,
+					cursor,
+				)
+
+			case 0:
+				if !burnRealizedFlowSwapsEquivalent(previous, swap) {
+					return nil, fmt.Errorf(
+						"conflicting swaps share cursor %s: first={%s} current={%s}",
+						cursor,
+						burnRealizedFlowSwapFingerprint(previous),
+						burnRealizedFlowSwapFingerprint(swap),
+					)
+				}
+
+				// The Graph occasionally exposes the same Ethereum log under
+				// multiple entity IDs. Keep the first deterministic record
+				// (the input was sorted by cursor and then ID) and do not
+				// double-count its volume or tick movement.
+				continue
+			}
+		}
+
+		normalized = append(
+			normalized,
+			swap,
+		)
 	}
 
-	return result, nil
+	return normalized, nil
+}
+
+func burnRealizedFlowSwapsEquivalent(
+	left domain.SwapEvent,
+	right domain.SwapEvent,
+) bool {
+	return left.Cursor().Equal(right.Cursor()) &&
+		strings.EqualFold(
+			strings.TrimSpace(left.TxHash),
+			strings.TrimSpace(right.TxHash),
+		) &&
+		normalizeAddress(left.PoolAddress) ==
+			normalizeAddress(right.PoolAddress) &&
+		left.Timestamp == right.Timestamp &&
+		burnRealizedFlowBigIntsEqual(left.Amount0Raw, right.Amount0Raw) &&
+		burnRealizedFlowBigIntsEqual(left.Amount1Raw, right.Amount1Raw) &&
+		burnRealizedFlowBigIntsEqual(
+			left.SqrtPriceX96After,
+			right.SqrtPriceX96After,
+		) &&
+		left.TickAfter == right.TickAfter
+}
+
+func burnRealizedFlowBigIntsEqual(
+	left *big.Int,
+	right *big.Int,
+) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+
+	return left.Cmp(right) == 0
+}
+
+func burnRealizedFlowSwapFingerprint(
+	swap domain.SwapEvent,
+) string {
+	return fmt.Sprintf(
+		"id=%q tx=%q cursor=%s amount0=%s amount1=%s sqrt=%s tick=%d timestamp=%d",
+		swap.ID,
+		swap.TxHash,
+		swap.Cursor(),
+		burnRealizedFlowOptionalBigIntString(swap.Amount0Raw),
+		burnRealizedFlowOptionalBigIntString(swap.Amount1Raw),
+		burnRealizedFlowOptionalBigIntString(swap.SqrtPriceX96After),
+		swap.TickAfter,
+		swap.Timestamp,
+	)
+}
+
+func burnRealizedFlowOptionalBigIntString(
+	value *big.Int,
+) string {
+	if value == nil {
+		return "<nil>"
+	}
+
+	return value.String()
 }
 
 func fetchBurnRealizedFlowSwapChunk(
