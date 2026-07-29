@@ -33,6 +33,10 @@ func run() error {
 		return err
 	}
 
+	if err := config.ValidateIndexer(); err != nil {
+		return err
+	}
+
 	db, err := database.OpenPostgresDB(config.PostgresURL)
 	if err != nil {
 		return err

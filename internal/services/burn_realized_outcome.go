@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 
 	"github.com/shopspring/decimal"
 
@@ -137,6 +138,12 @@ type BurnRealizedOutcomeService struct {
 	provider     BurnRealizedOutcomeProvider
 	repository   BurnRealizedOutcomeRepository
 	curveService *PriceImpactCurveService
+
+	// The realized dataset and the no-burn counterfactual consume the exact same
+	// burn-to-max-horizon event stream. Keep the PostgreSQL-loaded stream once in
+	// memory and release it immediately after the counterfactual sample consumes it.
+	flowCacheMu sync.Mutex
+	flowCache   map[burnRealizedFlowCacheKey]burnRealizedFlowEventSet
 }
 
 func NewBurnRealizedOutcomeService(
@@ -150,6 +157,10 @@ func NewBurnRealizedOutcomeService(
 		repository: repository,
 
 		curveService: curveService,
+
+		flowCache: make(
+			map[burnRealizedFlowCacheKey]burnRealizedFlowEventSet,
+		),
 	}
 }
 
@@ -355,53 +366,16 @@ func (s *BurnRealizedOutcomeService) Analyze(
 			continue
 		}
 
-		snapshot, err :=
-			s.provider.PoolSnapshotAt(
-				ctx,
-				req.Sample.Burn.PoolAddress,
-				futureBlock,
-			)
+		futurePool, err := loadHistoricalPoolAt(
+			ctx,
+			s.provider,
+			s.repository,
+			req.Sample.Burn.PoolAddress,
+			futureBlock,
+		)
 		if err != nil {
 			return BurnRealizedOutcomeReport{}, fmt.Errorf(
-				"analyze burn realized outcome: load future snapshot at block %d: %w",
-				futureBlock,
-				err,
-			)
-		}
-
-		if err :=
-			validateBurnOutcomeSnapshot(
-				snapshot,
-				req.Sample.Burn.PoolAddress,
-				futureBlock,
-			); err != nil {
-			return BurnRealizedOutcomeReport{}, fmt.Errorf(
-				"analyze burn realized outcome: %w",
-				err,
-			)
-		}
-
-		input, err :=
-			s.repository.
-				LoadReconstructionInputFromSnapshot(
-					ctx,
-					snapshot,
-				)
-		if err != nil {
-			return BurnRealizedOutcomeReport{}, fmt.Errorf(
-				"analyze burn realized outcome: load reconstruction input at block %d: %w",
-				futureBlock,
-				err,
-			)
-		}
-
-		futurePool, err :=
-			ReconstructPool(
-				input,
-			)
-		if err != nil {
-			return BurnRealizedOutcomeReport{}, fmt.Errorf(
-				"analyze burn realized outcome: reconstruct future pool at block %d: %w",
+				"analyze burn realized outcome: load local future pool at block %d: %w",
 				futureBlock,
 				err,
 			)

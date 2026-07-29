@@ -979,3 +979,120 @@ func mustBigIntFromString(
 
 	return result
 }
+
+func TestObservedSwapSimulationMatchesHistoricalMultiTickRounding(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	observedInput := mustBigIntFromString(
+		t,
+		"4525690312225770000000",
+	)
+	observedOutput := mustBigIntFromString(
+		t,
+		"9754210715357",
+	)
+	observedSqrt := mustBigIntFromString(
+		t,
+		"1726335126262473571011402445424770",
+	)
+
+	swap := domain.SwapEvent{
+		ID:                "historical-multi-tick-rounding",
+		Amount0Raw:        new(big.Int).Neg(new(big.Int).Set(observedOutput)),
+		Amount1Raw:        new(big.Int).Set(observedInput),
+		SqrtPriceX96After: new(big.Int).Set(observedSqrt),
+		TickAfter:         199_793,
+	}
+
+	exactInput := observedSwapSimulation{
+		Mode:              observedSwapReplayExactInput,
+		AmountIn:          new(big.Int).Set(observedInput),
+		AmountOut:         new(big.Int).Add(new(big.Int).Set(observedOutput), big.NewInt(1)),
+		SqrtPriceAfterX96: new(big.Int).Set(observedSqrt),
+		TickAfter:         199_793,
+		LiquidityAfter:    mustBigIntFromString(t, "9375625510151241810"),
+		SwapSteps:         80,
+	}
+
+	if !observedSwapSimulationMatches(exactInput, swap) {
+		t.Fatal("exact-input simulation with one-unit counter-output rounding must match")
+	}
+
+	exactOutput := observedSwapSimulation{
+		Mode: observedSwapReplayExactOutput,
+		AmountIn: mustBigIntFromString(
+			t,
+			"4525690312225002844764",
+		),
+		AmountOut: new(big.Int).Set(observedOutput),
+		SqrtPriceAfterX96: mustBigIntFromString(
+			t,
+			"1726335126262467091453361782238017",
+		),
+		TickAfter:      199_793,
+		LiquidityAfter: mustBigIntFromString(t, "9375625510151241810"),
+		SwapSteps:      80,
+	}
+
+	if !observedSwapCounterAmountWithinTolerance(
+		exactOutput.AmountIn,
+		observedInput,
+		exactOutput.SwapSteps,
+	) {
+		t.Fatal(
+			"exact-output counter-input difference must remain inside the amount-rounding tolerance",
+		)
+	}
+
+	// The exact-output candidate has a counter-input difference small enough
+	// for historical integer rounding, but its final sqrtPriceX96 is outside
+	// the deliberately stricter state tolerance. It must therefore not be
+	// treated as a full observed-state match. Exact input is the only valid
+	// replay mode for this historical event.
+	if observedSwapSimulationSqrtWithinTolerance(
+		exactOutput,
+		swap,
+	) {
+		t.Fatal(
+			"exact-output sqrtPriceX96 difference must remain outside the strict state tolerance",
+		)
+	}
+
+	if observedSwapSimulationMatches(exactOutput, swap) {
+		t.Fatal(
+			"exact-output simulation must not match when its final state exceeds the sqrt tolerance",
+		)
+	}
+
+	selected, err := selectObservedSwapSimulation(
+		exactInput,
+		exactOutput,
+		swap,
+	)
+	if err != nil {
+		t.Fatalf("selectObservedSwapSimulation() error = %v", err)
+	}
+	if selected.Mode != observedSwapReplayExactInput {
+		t.Fatalf(
+			"selected mode = %q, want %q",
+			selected.Mode,
+			observedSwapReplayExactInput,
+		)
+	}
+}
+
+func TestObservedSwapCounterAmountToleranceRejectsMaterialDifference(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	if observedSwapCounterAmountWithinTolerance(
+		big.NewInt(999_000),
+		big.NewInt(1_000_000),
+		10,
+	) {
+		t.Fatal("material counter-amount difference must not be accepted")
+	}
+}

@@ -152,7 +152,7 @@ func (s *PreBurnStateService) Build(
 	if head.BlockNumber <
 		burn.Cursor.BlockNumber {
 		return PreBurnStateResult{}, fmt.Errorf(
-			"build pre-burn state: graph indexed head %d is before burn block %d",
+			"build pre-burn state: local indexed head %d is before burn block %d",
 			head.BlockNumber,
 			burn.Cursor.BlockNumber,
 		)
@@ -192,51 +192,16 @@ func (s *PreBurnStateService) Build(
 	snapshotBlock :=
 		burn.Cursor.BlockNumber - 1
 
-	snapshot, err :=
-		s.provider.PoolSnapshotAt(
-			ctx,
-			burn.PoolAddress,
-			snapshotBlock,
-		)
-	if err != nil {
-		return PreBurnStateResult{}, fmt.Errorf(
-			"build pre-burn state: load snapshot at block %d: %w",
-			snapshotBlock,
-			err,
-		)
-	}
-
-	if err := validateValidationSnapshot(
-		snapshot,
+	pool, err := loadHistoricalPoolAt(
+		ctx,
+		s.provider,
+		s.repository,
 		burn.PoolAddress,
 		snapshotBlock,
-	); err != nil {
-		return PreBurnStateResult{}, fmt.Errorf(
-			"build pre-burn state: %w",
-			err,
-		)
-	}
-
-	input, err :=
-		s.repository.
-			LoadReconstructionInputFromSnapshot(
-				ctx,
-				snapshot,
-			)
+	)
 	if err != nil {
 		return PreBurnStateResult{}, fmt.Errorf(
-			"build pre-burn state: load reconstruction input: %w",
-			err,
-		)
-	}
-
-	pool, err :=
-		ReconstructPool(
-			input,
-		)
-	if err != nil {
-		return PreBurnStateResult{}, fmt.Errorf(
-			"build pre-burn state: reconstruct block %d: %w",
+			"build pre-burn state: load local pool at block %d: %w",
 			snapshotBlock,
 			err,
 		)
@@ -400,7 +365,7 @@ func (s *PreBurnStateService) fetchSwapsBeforeBurn(
 				burnCursor,
 			) {
 				if err :=
-					swap.ValidateForSimulation(); err != nil {
+					swap.ValidateForObservation(); err != nil {
 					return nil, fmt.Errorf(
 						"prior swap %s: %w",
 						swap.ID,
@@ -677,11 +642,26 @@ const (
 
 	observedSwapReplayBoth observedSwapReplayMode = "exact_input_and_exact_output"
 
+	// The Swap event does not expose amountSpecified. When neither reconstructed
+	// protocol mode reproduces the observed event, counterfactual analysis keeps
+	// both exact-input and exact-output interpretations as an explicit sensitivity
+	// envelope instead of failing the entire empirical run. Historical actual-state
+	// reconstruction still follows the authoritative post-state emitted on-chain.
+	observedSwapReplayUnresolved observedSwapReplayMode = "unresolved_sensitivity"
+
 	// Swap events expose integer token deltas, not the original amountSpecified.
 	// Around integer-rounding boundaries, the same observed deltas can correspond
 	// to a tiny interval of valid sqrtPriceX96 values. We accept only an
 	// economically negligible relative sqrt difference: 1e-16 = 1e-12 bps.
 	observedSwapSqrtRelativeToleranceDenominator int64 = 10_000_000_000_000_000
+
+	// Multi-step swaps can accumulate one-wei counter-amount rounding differences
+	// between the reconstructed simulator and the integer token deltas emitted by
+	// the pool. The amountSpecified side must remain exact. Only the counter side
+	// receives this strict tolerance: max(1 raw unit, one raw unit per swap
+	// step, 1e-12 relative).
+	observedSwapCounterAmountAbsoluteToleranceRaw         int64 = 1
+	observedSwapCounterAmountRelativeToleranceDenominator int64 = 1_000_000_000_000
 )
 
 type observedSwapSimulation struct {
@@ -726,7 +706,7 @@ func replayObservedSwap(
 	}
 
 	if err :=
-		swap.ValidateForSimulation(); err != nil {
+		swap.ValidateForObservation(); err != nil {
 		return nil,
 			BurnSwapReplayAudit{},
 			fmt.Errorf(
@@ -743,13 +723,31 @@ func replayObservedSwap(
 			simulator,
 		)
 
-	exactOutput,
-		exactOutputErr :=
-		simulateObservedSwapAsExactOutput(
-			current,
-			swap,
-			simulator,
+	var (
+		exactOutput    observedSwapSimulation
+		exactOutputErr error
+	)
+
+	// A zero-output event cannot originate from exact-output semantics because
+	// exact output requires a strictly positive requested output. It can still
+	// be a valid exact-input event when all usable input and/or output rounds to
+	// zero, including a fee-only swap.
+	if swap.AmountOutRaw().Sign() == 0 {
+		exactOutput = observedSwapSimulation{
+			Mode: observedSwapReplayExactOutput,
+		}
+		exactOutputErr = fmt.Errorf(
+			"observed output is zero; exact-output mode is unavailable",
 		)
+	} else {
+		exactOutput,
+			exactOutputErr =
+			simulateObservedSwapAsExactOutput(
+				current,
+				swap,
+				simulator,
+			)
+	}
 
 	exactInputMatches :=
 		exactInputErr == nil &&
@@ -1003,12 +1001,16 @@ func simulateObservedSwapAsExactInput(
 	swap domain.SwapEvent,
 	simulator *uniswapv3.Simulator,
 ) (observedSwapSimulation, error) {
+	allowZeroOutput := swap.AmountOutRaw().Sign() == 0
+
 	result, err := simulator.SimulateExactInput(
 		pool,
 		uniswapv3.ExactInputRequest{
 			AmountIn: swap.AmountInRaw(),
 
 			ZeroForOne: swap.IsZeroForOne(),
+
+			AllowZeroOutput: allowZeroOutput,
 		},
 	)
 	if err != nil {
@@ -1017,9 +1019,10 @@ func simulateObservedSwapAsExactInput(
 		}, err
 	}
 
-	if err := validateSwapSimulationResult(
+	if err := validateObservedExactInputSimulationResult(
 		result,
 		swap.AmountInRaw(),
+		allowZeroOutput,
 	); err != nil {
 		return observedSwapSimulation{
 			Mode: observedSwapReplayExactInput,
@@ -1059,6 +1062,123 @@ func simulateObservedSwapAsExactInput(
 
 		SwapSteps: result.SwapSteps,
 	}, nil
+}
+
+func validateObservedExactInputSimulationResult(
+	result *uniswapv3.ExactInputResult,
+	expectedAmountIn *big.Int,
+	allowZeroOutput bool,
+) error {
+	if !allowZeroOutput {
+		return validateSwapSimulationResult(
+			result,
+			expectedAmountIn,
+		)
+	}
+
+	if result == nil {
+		return fmt.Errorf(
+			"simulator returned nil historical replay result",
+		)
+	}
+
+	if expectedAmountIn == nil ||
+		expectedAmountIn.Sign() <= 0 {
+		return fmt.Errorf(
+			"expected historical amount in must be positive",
+		)
+	}
+
+	if result.AmountIn == nil ||
+		result.AmountIn.Cmp(expectedAmountIn) != 0 {
+		return fmt.Errorf(
+			"historical replay gross input does not match observed input",
+		)
+	}
+
+	if result.AmountInLessFee == nil ||
+		result.AmountInLessFee.Sign() < 0 {
+		return fmt.Errorf(
+			"historical replay usable input is invalid: %v",
+			result.AmountInLessFee,
+		)
+	}
+
+	if result.FeeAmount == nil ||
+		result.FeeAmount.Sign() < 0 {
+		return fmt.Errorf(
+			"historical replay fee amount is invalid: %v",
+			result.FeeAmount,
+		)
+	}
+
+	if result.AmountOut == nil ||
+		result.AmountOut.Sign() < 0 {
+		return fmt.Errorf(
+			"historical replay output is invalid: %v",
+			result.AmountOut,
+		)
+	}
+
+	if result.SqrtPriceAfterX96 == nil ||
+		result.SqrtPriceAfterX96.Sign() <= 0 {
+		return fmt.Errorf(
+			"historical replay sqrt price after is invalid: %v",
+			result.SqrtPriceAfterX96,
+		)
+	}
+
+	if result.LiquidityAfter == nil ||
+		result.LiquidityAfter.Sign() < 0 ||
+		result.LiquidityAfter.BitLen() > 128 {
+		return fmt.Errorf(
+			"historical replay active liquidity after is invalid: %v",
+			result.LiquidityAfter,
+		)
+	}
+
+	if result.TickAfter != result.TickAfterApprox {
+		return fmt.Errorf(
+			"historical replay exact tick %d differs from compatibility tick %d",
+			result.TickAfter,
+			result.TickAfterApprox,
+		)
+	}
+
+	if result.CrossedTicks < 0 ||
+		result.SwapSteps <= 0 ||
+		result.CrossedTicks > result.SwapSteps {
+		return fmt.Errorf(
+			"invalid historical replay step accounting: crossed_ticks=%d swap_steps=%d",
+			result.CrossedTicks,
+			result.SwapSteps,
+		)
+	}
+
+	accountedInput := new(big.Int).Add(
+		cloneBigInt(result.AmountInLessFee),
+		result.FeeAmount,
+	)
+
+	if accountedInput.Cmp(expectedAmountIn) != 0 {
+		return fmt.Errorf(
+			"historical replay input accounting mismatch: observed=%s usable=%s fee=%s accounted=%s",
+			expectedAmountIn,
+			result.AmountInLessFee,
+			result.FeeAmount,
+			accountedInput,
+		)
+	}
+
+	if result.AmountInLessFee.Sign() == 0 &&
+		result.AmountOut.Sign() != 0 {
+		return fmt.Errorf(
+			"fee-only historical replay produced non-zero output %s",
+			result.AmountOut,
+		)
+	}
+
+	return nil
 }
 
 func simulateObservedSwapAsExactOutput(
@@ -1261,18 +1381,95 @@ func observedSwapSimulationAmountsAndTickMatch(
 	simulation observedSwapSimulation,
 	swap domain.SwapEvent,
 ) bool {
-	return simulation.AmountIn != nil &&
-		simulation.AmountOut != nil &&
-		simulation.SqrtPriceAfterX96 != nil &&
-		simulation.LiquidityAfter != nil &&
-		simulation.AmountIn.Cmp(
-			swap.AmountInRaw(),
-		) == 0 &&
-		simulation.AmountOut.Cmp(
-			swap.AmountOutRaw(),
-		) == 0 &&
-		simulation.TickAfter ==
-			swap.TickAfter
+	observedAmountIn := swap.AmountInRaw()
+	observedAmountOut := swap.AmountOutRaw()
+
+	if simulation.AmountIn == nil ||
+		simulation.AmountOut == nil ||
+		simulation.SqrtPriceAfterX96 == nil ||
+		simulation.LiquidityAfter == nil ||
+		observedAmountIn == nil ||
+		observedAmountOut == nil ||
+		simulation.TickAfter != swap.TickAfter {
+		return false
+	}
+
+	switch simulation.Mode {
+	case observedSwapReplayExactInput:
+		// Exact-input replay must consume the exact observed gross input. A
+		// zero-output event must remain exactly zero; for positive outputs, the
+		// counter amount may differ only by bounded integer rounding accumulated
+		// across swap steps.
+		if simulation.AmountIn.Cmp(observedAmountIn) != 0 {
+			return false
+		}
+
+		if observedAmountOut.Sign() == 0 {
+			return simulation.AmountOut.Sign() == 0
+		}
+
+		return observedSwapCounterAmountWithinTolerance(
+			simulation.AmountOut,
+			observedAmountOut,
+			simulation.SwapSteps,
+		)
+
+	case observedSwapReplayExactOutput:
+		// Exact-output replay must deliver the exact observed output. The input
+		// is the counter amount and receives the same strict rounding bound.
+		return simulation.AmountOut.Cmp(observedAmountOut) == 0 &&
+			observedSwapCounterAmountWithinTolerance(
+				simulation.AmountIn,
+				observedAmountIn,
+				simulation.SwapSteps,
+			)
+
+	default:
+		return false
+	}
+}
+
+func observedSwapCounterAmountWithinTolerance(
+	simulated *big.Int,
+	observed *big.Int,
+	swapSteps int,
+) bool {
+	if simulated == nil ||
+		observed == nil ||
+		simulated.Sign() < 0 ||
+		observed.Sign() < 0 {
+		return false
+	}
+
+	difference := new(big.Int).Sub(
+		simulated,
+		observed,
+	)
+	difference.Abs(difference)
+
+	absoluteTolerance := observedSwapCounterAmountAbsoluteToleranceRaw
+	if int64(swapSteps) > absoluteTolerance {
+		absoluteTolerance = int64(swapSteps)
+	}
+
+	if difference.Cmp(
+		big.NewInt(absoluteTolerance),
+	) <= 0 {
+		return true
+	}
+
+	if observed.Sign() == 0 {
+		return false
+	}
+
+	scaledDifference := new(big.Int).Mul(
+		difference,
+		big.NewInt(
+			observedSwapCounterAmountRelativeToleranceDenominator,
+		),
+	)
+
+	return scaledDifference.Cmp(observed) <= 0
 }
 
 func observedSwapSimulationSqrtWithinTolerance(

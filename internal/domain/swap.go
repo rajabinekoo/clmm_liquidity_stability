@@ -146,14 +146,14 @@ func (s SwapEvent) IsZeroForOne() bool {
 	return s.Amount0Raw != nil &&
 		s.Amount1Raw != nil &&
 		s.Amount0Raw.Sign() > 0 &&
-		s.Amount1Raw.Sign() < 0
+		s.Amount1Raw.Sign() <= 0
 }
 
 func (s SwapEvent) IsOneForZero() bool {
 	return s.Amount0Raw != nil &&
 		s.Amount1Raw != nil &&
 		s.Amount1Raw.Sign() > 0 &&
-		s.Amount0Raw.Sign() < 0
+		s.Amount0Raw.Sign() <= 0
 }
 
 // AmountInRaw returns the observed positive pool delta for the input token.

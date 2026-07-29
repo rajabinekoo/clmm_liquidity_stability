@@ -18,7 +18,8 @@ type burnFlowFetchCall struct {
 }
 
 type fakeBurnRealizedFlowProvider struct {
-	calls []burnFlowFetchCall
+	metadataCalls int
+	calls         []burnFlowFetchCall
 
 	pages map[string][]domain.SwapEvent
 }
@@ -29,6 +30,8 @@ func (
 	_ context.Context,
 	poolAddress string,
 ) (domain.Pool, error) {
+	f.metadataCalls++
+
 	return domain.Pool{
 		Address: poolAddress,
 
@@ -574,5 +577,141 @@ func TestFetchBurnRealizedFlowSwapsRejectsConflictingDuplicateCursor(
 			"fetchBurnRealizedFlowSwaps() error = %q, want conflicting cursor detail",
 			err,
 		)
+	}
+}
+
+type fakeBurnRealizedFlowOutcomeProvider struct {
+	*fakeBurnRealizedFlowProvider
+}
+
+func (f *fakeBurnRealizedFlowOutcomeProvider) IndexedHead(
+	_ context.Context,
+) (domain.IndexedHead, error) {
+	return domain.IndexedHead{BlockNumber: 1_000}, nil
+}
+
+func (f *fakeBurnRealizedFlowOutcomeProvider) PoolSnapshotAt(
+	_ context.Context,
+	_ string,
+	_ uint64,
+) (domain.PoolSnapshot, error) {
+	return domain.PoolSnapshot{}, nil
+}
+
+type fakeBurnRealizedFlowOutcomeRepository struct {
+	liquidityCalls int
+	swapCalls      int
+	changes        []domain.LiquidityChange
+	swaps          []domain.SwapEvent
+}
+
+func (f *fakeBurnRealizedFlowOutcomeRepository) LoadReconstructionInputFromSnapshot(
+	_ context.Context,
+	_ domain.PoolSnapshot,
+) (domain.ReconstructionInput, error) {
+	return domain.ReconstructionInput{}, nil
+}
+
+func (f *fakeBurnRealizedFlowOutcomeRepository) LoadLiquidityChangesAfterCursorThroughBlock(
+	_ context.Context,
+	_ string,
+	_ domain.EventCursor,
+	_ uint64,
+) ([]domain.LiquidityChange, error) {
+	f.liquidityCalls++
+	return cloneBurnFlowLiquidityChanges(f.changes), nil
+}
+
+func (f *fakeBurnRealizedFlowOutcomeRepository) LoadSwapsAfterCursorThroughBlock(
+	_ context.Context,
+	_ string,
+	_ domain.EventCursor,
+	_ uint64,
+) ([]domain.SwapEvent, error) {
+	f.swapCalls++
+	return cloneBurnFlowSwaps(f.swaps), nil
+}
+
+func TestLoadBurnRealizedFlowEventsReusesAndReleasesCache(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const poolAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	flowProvider := &fakeBurnRealizedFlowProvider{
+		pages: map[string][]domain.SwapEvent{},
+	}
+	provider := &fakeBurnRealizedFlowOutcomeProvider{
+		fakeBurnRealizedFlowProvider: flowProvider,
+	}
+	repository := &fakeBurnRealizedFlowOutcomeRepository{
+		swaps: []domain.SwapEvent{
+			burnFlowTestSwap(poolAddress, 110, 1, "swap-1"),
+		},
+	}
+	service := NewBurnRealizedOutcomeService(
+		provider,
+		repository,
+		&PriceImpactCurveService{},
+	)
+	burn := domain.BurnCandidate{
+		PoolAddress: poolAddress,
+		Cursor: domain.EventCursor{
+			BlockNumber: 100,
+			LogIndex:    5,
+		},
+	}
+
+	for index := 0; index < 2; index++ {
+		result, err := service.loadBurnRealizedFlowEvents(
+			context.Background(),
+			burn,
+			150,
+			true,
+		)
+		if err != nil {
+			t.Fatalf("loadBurnRealizedFlowEvents() call %d error = %v", index+1, err)
+		}
+		if len(result.Swaps) != 1 {
+			t.Fatalf("call %d swap count = %d, want 1", index+1, len(result.Swaps))
+		}
+	}
+
+	if flowProvider.metadataCalls != 0 {
+		t.Fatalf("metadata calls = %d, want 0 for local swap loading", flowProvider.metadataCalls)
+	}
+	if len(flowProvider.calls) != 0 {
+		t.Fatalf("remote swap page calls = %d, want 0", len(flowProvider.calls))
+	}
+	if repository.liquidityCalls != 1 {
+		t.Fatalf("liquidity calls = %d, want 1", repository.liquidityCalls)
+	}
+	if repository.swapCalls != 1 {
+		t.Fatalf("local swap calls = %d, want 1", repository.swapCalls)
+	}
+
+	service.releaseBurnRealizedFlowEvents(burn, 150)
+
+	if _, err := service.loadBurnRealizedFlowEvents(
+		context.Background(),
+		burn,
+		150,
+		true,
+	); err != nil {
+		t.Fatalf("load after release error = %v", err)
+	}
+
+	if flowProvider.metadataCalls != 0 {
+		t.Fatalf("metadata calls after release = %d, want 0", flowProvider.metadataCalls)
+	}
+	if len(flowProvider.calls) != 0 {
+		t.Fatalf("remote swap page calls after release = %d, want 0", len(flowProvider.calls))
+	}
+	if repository.liquidityCalls != 2 {
+		t.Fatalf("liquidity calls after release = %d, want 2", repository.liquidityCalls)
+	}
+	if repository.swapCalls != 2 {
+		t.Fatalf("local swap calls after release = %d, want 2", repository.swapCalls)
 	}
 }

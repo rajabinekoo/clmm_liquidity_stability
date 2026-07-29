@@ -28,7 +28,7 @@ type Config struct {
 
 	AmountGridToken0 string `env:"AMOUNT_GRID_TOKEN0,required"`
 
-	TheGraphAPIKey string `env:"THE_GRAPH_API_KEY,required"`
+	TheGraphAPIKey string `env:"THE_GRAPH_API_KEY"`
 	PostgresURL    string `env:"POSTGRES_URL,required"`
 
 	OutputBaseDir string `env:"OUTPUT_BASE_DIR" envDefault:"outputs"`
@@ -38,6 +38,18 @@ type Config struct {
 	ConfirmationDepth uint64        `env:"CONFIRMATION_DEPTH" envDefault:"20"`
 	PollInterval      time.Duration `env:"POLL_INTERVAL" envDefault:"5s"`
 	TheGraphTimeout   time.Duration `env:"THE_GRAPH_TIMEOUT" envDefault:"2m"`
+
+	IndexerOnce    bool `env:"INDEXER_ONCE" envDefault:"false"`
+	IndexLPActions bool `env:"INDEX_LP_ACTIONS" envDefault:"true"`
+	IndexSwaps     bool `env:"INDEX_SWAPS" envDefault:"true"`
+
+	SwapWindowSize        uint64        `env:"SWAP_WINDOW_SIZE" envDefault:"500"`
+	SwapMinimumWindowSize uint64        `env:"SWAP_MINIMUM_WINDOW_SIZE" envDefault:"50"`
+	SwapPageSize          int           `env:"SWAP_PAGE_SIZE" envDefault:"1000"`
+	SwapFetchMaxAttempts  int           `env:"SWAP_FETCH_MAX_ATTEMPTS" envDefault:"2"`
+	SwapRequestTimeout    time.Duration `env:"SWAP_REQUEST_TIMEOUT" envDefault:"20s"`
+	SwapRetryBaseDelay    time.Duration `env:"SWAP_RETRY_BASE_DELAY" envDefault:"2s"`
+	SwapIndexStartBlock   uint64        `env:"SWAP_INDEX_START_BLOCK" envDefault:"0"`
 
 	LookbackBlocks      uint64 `env:"LOOKBACK_BLOCKS" envDefault:"300000"`
 	StepBlocks          uint64 `env:"STEP_BLOCKS" envDefault:"10000"`
@@ -81,6 +93,12 @@ type ExportedPoolConfig struct {
 	WindowSize        uint64 `json:"window_size"`
 	PageSize          int    `json:"page_size"`
 	ConfirmationDepth uint64 `json:"confirmation_depth"`
+
+	SwapWindowSize        uint64        `json:"swap_window_size"`
+	SwapMinimumWindowSize uint64        `json:"swap_minimum_window_size"`
+	SwapPageSize          int           `json:"swap_page_size"`
+	SwapRequestTimeout    time.Duration `json:"swap_request_timeout"`
+	SwapIndexStartBlock   uint64        `json:"swap_index_start_block"`
 
 	LookbackBlocks      uint64 `json:"lookback_blocks"`
 	StepBlocks          uint64 `json:"step_blocks"`
@@ -144,6 +162,20 @@ func load[T any](dst *T) error {
 	return nil
 }
 
+func (c Config) ValidateIndexer() error {
+	if strings.TrimSpace(c.TheGraphAPIKey) == "" {
+		return fmt.Errorf("config: THE_GRAPH_API_KEY is required for the indexer")
+	}
+
+	if c.TheGraphTimeout <= 0 {
+		return fmt.Errorf(
+			"config: THE_GRAPH_TIMEOUT must be greater than zero",
+		)
+	}
+
+	return nil
+}
+
 func (c Config) Validate() error {
 	if c.PoolAddress == "" {
 		return fmt.Errorf("config: POOL_ADDRESS is required")
@@ -187,9 +219,46 @@ func (c Config) Validate() error {
 		)
 	}
 
-	if c.TheGraphTimeout <= 0 {
+	if !c.IndexLPActions && !c.IndexSwaps {
 		return fmt.Errorf(
-			"config: THE_GRAPH_TIMEOUT must be greater than zero",
+			"config: at least one of INDEX_LP_ACTIONS or INDEX_SWAPS must be enabled",
+		)
+	}
+
+	if c.SwapWindowSize == 0 {
+		return fmt.Errorf(
+			"config: SWAP_WINDOW_SIZE must be greater than zero",
+		)
+	}
+
+	if c.SwapMinimumWindowSize == 0 ||
+		c.SwapMinimumWindowSize > c.SwapWindowSize {
+		return fmt.Errorf(
+			"config: SWAP_MINIMUM_WINDOW_SIZE must be inside [1, SWAP_WINDOW_SIZE]",
+		)
+	}
+
+	if c.SwapPageSize <= 0 || c.SwapPageSize > 1_000 {
+		return fmt.Errorf(
+			"config: SWAP_PAGE_SIZE must be between 1 and 1000",
+		)
+	}
+
+	if c.SwapFetchMaxAttempts <= 0 || c.SwapFetchMaxAttempts > 10 {
+		return fmt.Errorf(
+			"config: SWAP_FETCH_MAX_ATTEMPTS must be between 1 and 10",
+		)
+	}
+
+	if c.SwapRequestTimeout <= 0 {
+		return fmt.Errorf(
+			"config: SWAP_REQUEST_TIMEOUT must be greater than zero",
+		)
+	}
+
+	if c.SwapRetryBaseDelay <= 0 {
+		return fmt.Errorf(
+			"config: SWAP_RETRY_BASE_DELAY must be greater than zero",
 		)
 	}
 
@@ -317,6 +386,84 @@ func (c Config) Validate() error {
 	return nil
 }
 
+func (c Config) RequiredSwapIndexStartBlock(
+	safeHead uint64,
+	poolCreatedBlock uint64,
+) (uint64, error) {
+	if safeHead == 0 {
+		return 0, fmt.Errorf(
+			"config: calculate swap index start: safe head is zero",
+		)
+	}
+
+	if poolCreatedBlock == 0 {
+		return 0, fmt.Errorf(
+			"config: calculate swap index start: pool created block is zero",
+		)
+	}
+
+	if poolCreatedBlock > safeHead {
+		return 0, fmt.Errorf(
+			"config: calculate swap index start: pool created block %d exceeds safe head %d",
+			poolCreatedBlock,
+			safeHead,
+		)
+	}
+
+	if c.SwapIndexStartBlock > 0 {
+		if c.SwapIndexStartBlock > safeHead {
+			return 0, fmt.Errorf(
+				"config: SWAP_INDEX_START_BLOCK %d exceeds safe head %d",
+				c.SwapIndexStartBlock,
+				safeHead,
+			)
+		}
+
+		if c.SwapIndexStartBlock < poolCreatedBlock {
+			return poolCreatedBlock, nil
+		}
+
+		return c.SwapIndexStartBlock, nil
+	}
+
+	// Burn candidates cover LOOKBACK_BLOCKS ending before the maximum outcome
+	// horizon. Their pre-burn replay may begin at the preceding LP snapshot, so
+	// retain one full LP index window as additional safety. The validation window
+	// and confirmation depth are included to keep analyzer preflight conservative.
+	components := []uint64{
+		c.LookbackBlocks,
+		c.WindowSize,
+		c.BurnMinimumSpacingBlocks,
+		c.ValidationBlockWindowSize,
+		c.ConfirmationDepth,
+		1,
+	}
+
+	var requiredLookback uint64
+
+	for _, component := range components {
+		if component > ^uint64(0)-requiredLookback {
+			return 0, fmt.Errorf(
+				"config: calculate swap index start: required lookback overflows uint64",
+			)
+		}
+
+		requiredLookback += component
+	}
+
+	startBlock := uint64(1)
+
+	if requiredLookback <= safeHead {
+		startBlock = safeHead - requiredLookback + 1
+	}
+
+	if startBlock < poolCreatedBlock {
+		startBlock = poolCreatedBlock
+	}
+
+	return startBlock, nil
+}
+
 func (c Config) OutputDir() string {
 	return filepath.Join(
 		c.OutputBaseDir,
@@ -368,6 +515,12 @@ func WritePoolConfigJSON(
 		WindowSize:        cfg.WindowSize,
 		PageSize:          cfg.PageSize,
 		ConfirmationDepth: cfg.ConfirmationDepth,
+
+		SwapWindowSize:        cfg.SwapWindowSize,
+		SwapMinimumWindowSize: cfg.SwapMinimumWindowSize,
+		SwapPageSize:          cfg.SwapPageSize,
+		SwapRequestTimeout:    cfg.SwapRequestTimeout,
+		SwapIndexStartBlock:   cfg.SwapIndexStartBlock,
 
 		LookbackBlocks: cfg.LookbackBlocks,
 		StepBlocks:     cfg.StepBlocks,

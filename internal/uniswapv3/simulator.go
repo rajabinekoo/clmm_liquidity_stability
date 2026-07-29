@@ -67,6 +67,11 @@ type ExactInputRequest struct {
 	AmountIn *big.Int
 
 	ZeroForOne bool
+
+	// AllowZeroOutput permits state-only historical replay of tiny exact-input
+	// swaps whose output rounds down to zero. The default remains false so
+	// pricing and ordinary simulations continue to reject zero-output trades.
+	AllowZeroOutput bool
 }
 
 type ExactInputResult struct {
@@ -365,13 +370,45 @@ func (s *Simulator) SimulateExactInput(
 		}
 	}
 
-	if totalAmountInLessFee.Sign() <= 0 {
+	if totalAmountInLessFee.Sign() < 0 {
 		return nil, fmt.Errorf(
-			"swap usable input is zero after applying step fees",
+			"swap usable input is negative after applying step fees",
 		)
 	}
 
-	if totalAmountOut.Sign() <= 0 {
+	// A tiny historical exact-input swap may be entirely consumed as fee after
+	// the protocol's integer rounding:
+	//
+	//	amountRemainingLessFee = floor(amountRemaining * feeComplement / 1e6)
+	//
+	// For example, amountRemaining=1 with a non-zero fee yields zero usable
+	// input. Uniswap still completes the swap loop, charges the full input as
+	// fee, emits zero output and may cross a boundary that was already at the
+	// current price. This is a valid historical state transition, but it is not
+	// useful for ordinary pricing. Keep it behind the explicit replay opt-in.
+	if totalAmountInLessFee.Sign() == 0 {
+		if !req.AllowZeroOutput {
+			return nil, fmt.Errorf(
+				"swap usable input is zero after applying step fees",
+			)
+		}
+
+		if totalAmountOut.Sign() != 0 {
+			return nil, fmt.Errorf(
+				"fee-only swap produced non-zero output %s",
+				totalAmountOut,
+			)
+		}
+	}
+
+	if totalAmountOut.Sign() < 0 {
+		return nil, fmt.Errorf(
+			"swap output is negative",
+		)
+	}
+
+	if totalAmountOut.Sign() == 0 &&
+		!req.AllowZeroOutput {
 		return nil, fmt.Errorf(
 			"swap output is zero",
 		)
@@ -414,31 +451,39 @@ func (s *Simulator) SimulateExactInput(
 		)
 	}
 
-	execution, err := executionPrice(
-		req.ZeroForOne,
-		totalAmountInLessFee,
-		totalAmountOut,
-	)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"calculate execution price: %w",
-			err,
-		)
-	}
+	execution := decimal.Zero
+	priceImpact := decimal.Zero
 
-	if spotBefore.IsZero() {
-		return nil, fmt.Errorf(
-			"spot price before swap is zero",
+	// A zero-output exact-input swap is useful only for historical state
+	// replay. It has no meaningful execution price, so reporting fields stay
+	// zero while the exact protocol state transition is still returned.
+	if totalAmountOut.Sign() > 0 {
+		execution, err = executionPrice(
+			req.ZeroForOne,
+			totalAmountInLessFee,
+			totalAmountOut,
 		)
-	}
+		if err != nil {
+			return nil, fmt.Errorf(
+				"calculate execution price: %w",
+				err,
+			)
+		}
 
-	priceImpact := execution.
-		Sub(spotBefore).
-		Abs().
-		Div(spotBefore).
-		Mul(
-			decimal.NewFromInt(10_000),
-		)
+		if spotBefore.IsZero() {
+			return nil, fmt.Errorf(
+				"spot price before swap is zero",
+			)
+		}
+
+		priceImpact = execution.
+			Sub(spotBefore).
+			Abs().
+			Div(spotBefore).
+			Mul(
+				decimal.NewFromInt(10_000),
+			)
+	}
 
 	return &ExactInputResult{
 		AmountIn: new(big.Int).Set(

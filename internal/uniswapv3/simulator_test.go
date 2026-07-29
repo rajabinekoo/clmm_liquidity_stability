@@ -3,6 +3,7 @@ package uniswapv3
 import (
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
@@ -107,6 +108,142 @@ func TestSimulatorExactInputInsideSingleRange(
 		result.LiquidityAfter,
 		pool.Liquidity,
 	)
+}
+
+func TestSimulatorExactInputZeroOutputRequiresExplicitReplayOptIn(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	pool := newSingleRangeTestPool(t)
+	simulator, err := NewSimulator(500)
+	if err != nil {
+		t.Fatalf("NewSimulator() error = %v", err)
+	}
+
+	_, err = simulator.SimulateExactInput(
+		pool,
+		ExactInputRequest{
+			AmountIn:   big.NewInt(2),
+			ZeroForOne: true,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "swap output is zero") {
+		t.Fatalf("default zero-output simulation error = %v, want swap output is zero", err)
+	}
+
+	poolBefore := cloneSimulatorTestPool(pool)
+	result, err := simulator.SimulateExactInput(
+		pool,
+		ExactInputRequest{
+			AmountIn:        big.NewInt(2),
+			ZeroForOne:      true,
+			AllowZeroOutput: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("SimulateExactInput(allow zero output) error = %v", err)
+	}
+	if result.AmountOut.Sign() != 0 {
+		t.Fatalf("AmountOut = %s, want 0", result.AmountOut)
+	}
+	if !result.ExecutionPrice.IsZero() {
+		t.Fatalf("ExecutionPrice = %s, want 0", result.ExecutionPrice)
+	}
+	if !result.PriceImpactBps.IsZero() {
+		t.Fatalf("PriceImpactBps = %s, want 0", result.PriceImpactBps)
+	}
+
+	accountedInput := new(big.Int).Add(
+		new(big.Int).Set(result.AmountInLessFee),
+		result.FeeAmount,
+	)
+	if accountedInput.Cmp(result.AmountIn) != 0 {
+		t.Fatalf(
+			"accounted input = %s, want %s",
+			accountedInput,
+			result.AmountIn,
+		)
+	}
+	assertSimulatorPoolEqual(t, pool, poolBefore)
+}
+
+func TestSimulatorExactInputFeeOnlyHistoricalReplay(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	pool := newSingleRangeTestPool(t)
+	simulator, err := NewSimulator(500)
+	if err != nil {
+		t.Fatalf("NewSimulator() error = %v", err)
+	}
+
+	_, err = simulator.SimulateExactInput(
+		pool,
+		ExactInputRequest{
+			AmountIn:   big.NewInt(1),
+			ZeroForOne: true,
+		},
+	)
+	if err == nil ||
+		!strings.Contains(err.Error(), "usable input is zero") {
+		t.Fatalf(
+			"default fee-only simulation error = %v, want usable-input error",
+			err,
+		)
+	}
+
+	poolBefore := cloneSimulatorTestPool(pool)
+	result, err := simulator.SimulateExactInput(
+		pool,
+		ExactInputRequest{
+			AmountIn:        big.NewInt(1),
+			ZeroForOne:      true,
+			AllowZeroOutput: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("SimulateExactInput(fee-only replay) error = %v", err)
+	}
+
+	if result.AmountInLessFee.Sign() != 0 {
+		t.Fatalf(
+			"AmountInLessFee = %s, want 0",
+			result.AmountInLessFee,
+		)
+	}
+	if result.FeeAmount.Cmp(big.NewInt(1)) != 0 {
+		t.Fatalf("FeeAmount = %s, want 1", result.FeeAmount)
+	}
+	if result.AmountOut.Sign() != 0 {
+		t.Fatalf("AmountOut = %s, want 0", result.AmountOut)
+	}
+	if result.SwapSteps <= 0 {
+		t.Fatalf("SwapSteps = %d, want positive", result.SwapSteps)
+	}
+	if !result.ExecutionPrice.IsZero() ||
+		!result.PriceImpactBps.IsZero() {
+		t.Fatalf(
+			"fee-only reporting must remain zero: execution=%s impact=%s",
+			result.ExecutionPrice,
+			result.PriceImpactBps,
+		)
+	}
+
+	accountedInput := new(big.Int).Add(
+		new(big.Int).Set(result.AmountInLessFee),
+		result.FeeAmount,
+	)
+	if accountedInput.Cmp(result.AmountIn) != 0 {
+		t.Fatalf(
+			"accounted input = %s, want %s",
+			accountedInput,
+			result.AmountIn,
+		)
+	}
+
+	assertSimulatorPoolEqual(t, pool, poolBefore)
 }
 
 func TestSimulatorAppliesFeePerSwapStep(

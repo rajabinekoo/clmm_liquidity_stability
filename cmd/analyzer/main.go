@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/rajabinekoo/clmm-liquidity-stability/internal/providers"
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/uniswapv3"
 
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/database"
@@ -38,11 +37,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-
-	provider := providers.New(
-		config.TheGraphAPIKey,
-		config.TheGraphTimeout,
-	)
 
 	curveAmounts, err := config.AmountGridToken0Raw()
 	if err != nil {
@@ -113,30 +107,126 @@ func run() error {
 	poolStateRepository :=
 		repositories.NewPoolStateRepository(db)
 
-	poolReconstructor :=
-		services.NewPoolReconstructor(
-			poolStateRepository,
-		)
-
-	pool, err := poolReconstructor.ReconstructLatest(
+	metadata, err := poolStateRepository.LoadPoolMetadata(
 		ctx,
 		config.PoolAddress,
 	)
 	if err != nil {
 		return fmt.Errorf(
-			"reconstruct pool: %w",
+			"load local pool metadata: %w",
+			err,
+		)
+	}
+
+	localHead, err := poolStateRepository.LocalIndexedHead(
+		ctx,
+		config.PoolAddress,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"load local analyzer head: %w",
+			err,
+		)
+	}
+
+	horizons := defaultBurnOutcomeHorizons()
+	maximumOutcomeHorizon := horizons[len(horizons)-1].Blocks
+
+	if maximumOutcomeHorizon > ^uint64(0)-config.LookbackBlocks {
+		return fmt.Errorf(
+			"resolve local analysis history: lookback %d plus maximum horizon %d overflows uint64",
+			config.LookbackBlocks,
+			maximumOutcomeHorizon,
+		)
+	}
+
+	analysisHistory := config.LookbackBlocks + maximumOutcomeHorizon
+	analysisFromBlock := uint64(1)
+	if localHead.BlockNumber > analysisHistory {
+		analysisFromBlock = localHead.BlockNumber - analysisHistory
+	}
+	if analysisFromBlock < metadata.CreatedBlock {
+		analysisFromBlock = metadata.CreatedBlock
+	}
+
+	requiredSwapFromBlock, err := config.RequiredSwapIndexStartBlock(
+		localHead.BlockNumber,
+		metadata.CreatedBlock,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"resolve required local analysis coverage: %w",
+			err,
+		)
+	}
+
+	swapCoverage, err := poolStateRepository.SwapIndexCoverage(
+		ctx,
+		config.PoolAddress,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"local swap index is unavailable: %w; run the matching `make backfill-swaps-...` target before the analyzer",
+			err,
+		)
+	}
+
+	if !swapCoverage.Covers(
+		requiredSwapFromBlock,
+		localHead.BlockNumber,
+	) {
+		return fmt.Errorf(
+			"local swap index coverage [%d,%d] does not cover required analyzer range [%d,%d]; run the matching `make backfill-swaps-...` target before the analyzer",
+			swapCoverage.FirstIndexedBlock,
+			swapCoverage.IndexedThrough,
+			requiredSwapFromBlock,
+			localHead.BlockNumber,
+		)
+	}
+
+	localStateProvider := services.NewLocalAnalysisProvider(
+		poolStateRepository,
+		config.PoolAddress,
+		analysisFromBlock,
+	)
+
+	if err := localStateProvider.Prepare(ctx); err != nil {
+		return fmt.Errorf(
+			"prepare offline local analysis state: %w",
+			err,
+		)
+	}
+
+	provider, err := newAnalyzerProvider(localStateProvider)
+	if err != nil {
+		return err
+	}
+
+	pool, err := provider.ReconstructedPoolAt(
+		ctx,
+		config.PoolAddress,
+		localHead.BlockNumber,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"reconstruct latest local pool: %w",
 			err,
 		)
 	}
 
 	slog.Info(
-		"pool reconstructed",
+		"offline analyzer state prepared",
 		"pool_address", pool.PoolAddress,
 		"block_number", pool.BlockNumber,
 		"current_tick", pool.CurrentTick,
 		"sqrt_price_x96", pool.SqrtPriceX96.String(),
 		"liquidity", pool.Liquidity.String(),
 		"initialized_ticks", len(pool.InitializedTicks),
+		"first_swap_block", swapCoverage.FirstIndexedBlock,
+		"indexed_through", localHead.BlockNumber,
+		"analysis_from_block", analysisFromBlock,
+		"required_swap_from_block", requiredSwapFromBlock,
+		"network_requests", 0,
 	)
 
 	simulator, err := uniswapv3.NewSimulator(config.PoolFee)
@@ -1050,7 +1140,7 @@ func run() error {
 		"to_block",
 		validationSummary.ToBlock,
 
-		"graph_indexed_through",
+		"local_indexed_through",
 		validationSummary.GraphIndexedThrough,
 
 		"scanned_windows",

@@ -215,7 +215,7 @@ func (e PoolBlockEvent) Validate() error {
 		}
 
 		if err :=
-			e.Swap.ValidateForSimulation(); err != nil {
+			e.Swap.ValidateForObservation(); err != nil {
 			return fmt.Errorf(
 				"swap event validation: %w",
 				err,

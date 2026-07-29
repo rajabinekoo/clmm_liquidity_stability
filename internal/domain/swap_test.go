@@ -95,6 +95,38 @@ func TestSwapEventOneForZero(
 	)
 }
 
+func TestSwapEventDirectionAndAmountsSupportZeroOutputObservation(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	zeroForOne := validDomainSwapEvent()
+	zeroForOne.Amount0Raw = big.NewInt(1)
+	zeroForOne.Amount1Raw = big.NewInt(0)
+
+	if err := zeroForOne.ValidateForObservation(); err != nil {
+		t.Fatalf("zeroForOne ValidateForObservation() error = %v", err)
+	}
+	if !zeroForOne.IsZeroForOne() || zeroForOne.IsOneForZero() {
+		t.Fatal("zero-output token0 input direction was not classified")
+	}
+	assertDomainBigIntEqual(t, zeroForOne.AmountInRaw(), big.NewInt(1))
+	assertDomainBigIntEqual(t, zeroForOne.AmountOutRaw(), big.NewInt(0))
+
+	oneForZero := validDomainSwapEvent()
+	oneForZero.Amount0Raw = big.NewInt(0)
+	oneForZero.Amount1Raw = big.NewInt(1)
+
+	if err := oneForZero.ValidateForObservation(); err != nil {
+		t.Fatalf("oneForZero ValidateForObservation() error = %v", err)
+	}
+	if !oneForZero.IsOneForZero() || oneForZero.IsZeroForOne() {
+		t.Fatal("zero-output token1 input direction was not classified")
+	}
+	assertDomainBigIntEqual(t, oneForZero.AmountInRaw(), big.NewInt(1))
+	assertDomainBigIntEqual(t, oneForZero.AmountOutRaw(), big.NewInt(0))
+}
+
 func TestSwapEventDirectionMethodsAreNilSafe(
 	t *testing.T,
 ) {

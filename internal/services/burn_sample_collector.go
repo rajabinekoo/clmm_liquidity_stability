@@ -47,6 +47,10 @@ type BurnSampleSkip struct {
 type BurnEventSample struct {
 	Burn domain.BurnCandidate
 
+	// runtime retains full immutable pre/post-burn pool states only for the
+	// current analyzer process. It is deliberately omitted from all outputs.
+	runtime *burnEventSampleRuntime
+
 	SnapshotBlock uint64
 
 	PriorLiquidityEvents int
@@ -1789,6 +1793,17 @@ func newBurnEventSample(
 
 	if err := sample.Validate(); err != nil {
 		return BurnEventSample{}, err
+	}
+
+	if err := attachBurnEventSampleRuntime(
+		&sample,
+		impact.PreBurnPool,
+		impact.PostBurnPool,
+	); err != nil {
+		return BurnEventSample{}, fmt.Errorf(
+			"attach runtime pool states: %w",
+			err,
+		)
 	}
 
 	return sample, nil

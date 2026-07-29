@@ -13,19 +13,26 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
-	"github.com/rajabinekoo/clmm-liquidity-stability/internal/providers"
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/repositories"
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/uniswapv3"
 )
 
+type SnapshotBatchProvider interface {
+	PoolSnapshotAt(
+		ctx context.Context,
+		poolAddress string,
+		blockNumber uint64,
+	) (domain.PoolSnapshot, error)
+}
+
 type SnapshotBatchAnalysisService struct {
-	provider   *providers.Client
+	provider   SnapshotBatchProvider
 	repository *repositories.PoolStateRepository
 	impact     *LiquidityImpactService
 }
 
 func NewSnapshotBatchAnalysisService(
-	provider *providers.Client,
+	provider SnapshotBatchProvider,
 	repository *repositories.PoolStateRepository,
 	impact *LiquidityImpactService,
 ) *SnapshotBatchAnalysisService {
@@ -193,29 +200,18 @@ func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
 	blockNumber uint64,
 	req SnapshotBatchRequest,
 ) (SnapshotBatchDetailedResult, error) {
-	snapshot, err := s.provider.PoolSnapshotAt(
+	pool, err := loadHistoricalPoolAt(
 		ctx,
+		s.provider,
+		s.repository,
 		req.PoolAddress,
 		blockNumber,
 	)
 	if err != nil {
 		return SnapshotBatchDetailedResult{}, fmt.Errorf(
-			"load pool snapshot: %w",
+			"load local reconstructed pool: %w",
 			err,
 		)
-	}
-
-	input, err := s.repository.LoadReconstructionInputFromSnapshot(
-		ctx,
-		snapshot,
-	)
-	if err != nil {
-		return SnapshotBatchDetailedResult{}, err
-	}
-
-	pool, err := ReconstructPool(input)
-	if err != nil {
-		return SnapshotBatchDetailedResult{}, err
 	}
 
 	oneForZeroAmountsIn, err := batchToken1EquivalentAmounts(

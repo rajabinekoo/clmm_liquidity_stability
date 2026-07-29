@@ -83,9 +83,16 @@ func (a BurnSwapReplayAudit) Validate() error {
 	}
 
 	if a.AmountOutRaw == nil ||
-		a.AmountOutRaw.Sign() <= 0 {
+		a.AmountOutRaw.Sign() < 0 {
 		return fmt.Errorf(
-			"burn swap replay audit: amount out must be positive",
+			"burn swap replay audit: amount out must not be negative",
+		)
+	}
+
+	if a.AmountOutRaw.Sign() == 0 &&
+		a.Mode != SwapReplayModeExactInput {
+		return fmt.Errorf(
+			"burn swap replay audit: zero output is valid only for exact-input replay",
 		)
 	}
 

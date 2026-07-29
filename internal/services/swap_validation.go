@@ -53,7 +53,7 @@ func (s *SwapValidationService) ValidateFirstSwapsPerBlock(
 //
 // A candidate is eligible only when:
 //
-//   - The Graph has indexed the requested block;
+//   - the local PostgreSQL index covers the requested block;
 //   - the local LP-action checkpoint covers the Swap block;
 //   - no Mint or Burn precedes the Swap in that block.
 //
@@ -77,14 +77,14 @@ func (s *SwapValidationService) ValidateCleanFirstSwapsPerBlock(
 	head, err := s.provider.IndexedHead(ctx)
 	if err != nil {
 		return SwapValidationReport{}, fmt.Errorf(
-			"swap validation: get The Graph indexed head: %w",
+			"swap validation: get local indexed head: %w",
 			err,
 		)
 	}
 
 	if head.BlockNumber < req.ToBlock {
 		return SwapValidationReport{}, fmt.Errorf(
-			"swap validation: The Graph indexed head %d "+
+			"swap validation: local indexed head %d "+
 				"is before requested to-block %d",
 			head.BlockNumber,
 			req.ToBlock,
@@ -527,48 +527,16 @@ func (s *SwapValidationService) validateSwap(
 	snapshotBlock :=
 		swap.BlockNumber - 1
 
-	snapshot, err :=
-		s.provider.PoolSnapshotAt(
-			ctx,
-			swap.PoolAddress,
-			snapshotBlock,
-		)
-	if err != nil {
-		return SwapValidationResult{}, fmt.Errorf(
-			"get pool snapshot at block %d: %w",
-			snapshotBlock,
-			err,
-		)
-	}
-
-	if err := validateValidationSnapshot(
-		snapshot,
+	pool, err := loadHistoricalPoolAt(
+		ctx,
+		s.provider,
+		s.repository,
 		swap.PoolAddress,
 		snapshotBlock,
-	); err != nil {
-		return SwapValidationResult{}, err
-	}
-
-	input, err :=
-		s.repository.
-			LoadReconstructionInputFromSnapshot(
-				ctx,
-				snapshot,
-			)
+	)
 	if err != nil {
 		return SwapValidationResult{}, fmt.Errorf(
-			"load reconstruction input "+
-				"from snapshot block %d: %w",
-			snapshotBlock,
-			err,
-		)
-	}
-
-	pool, err :=
-		ReconstructPool(input)
-	if err != nil {
-		return SwapValidationResult{}, fmt.Errorf(
-			"reconstruct pool at block %d: %w",
+			"load local reconstructed pool at block %d: %w",
 			snapshotBlock,
 			err,
 		)

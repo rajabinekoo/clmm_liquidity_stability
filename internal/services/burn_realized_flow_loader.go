@@ -46,6 +46,13 @@ type BurnRealizedFlowRepository interface {
 		startCursor domain.EventCursor,
 		throughBlock uint64,
 	) ([]domain.LiquidityChange, error)
+
+	LoadSwapsAfterCursorThroughBlock(
+		ctx context.Context,
+		poolAddress string,
+		startCursor domain.EventCursor,
+		throughBlock uint64,
+	) ([]domain.SwapEvent, error)
 }
 
 type burnRealizedFlowEventSet struct {
@@ -56,6 +63,78 @@ type burnRealizedFlowEventSet struct {
 
 	LiquidityChanges []domain.LiquidityChange
 	Swaps            []domain.SwapEvent
+}
+
+type burnRealizedFlowCacheKey struct {
+	PoolAddress  string
+	BurnBlock    uint64
+	BurnLog      int
+	ThroughBlock uint64
+}
+
+func newBurnRealizedFlowCacheKey(
+	burn domain.BurnCandidate,
+	throughBlock uint64,
+) burnRealizedFlowCacheKey {
+	return burnRealizedFlowCacheKey{
+		PoolAddress:  normalizeAddress(burn.PoolAddress),
+		BurnBlock:    burn.Cursor.BlockNumber,
+		BurnLog:      burn.Cursor.LogIndex,
+		ThroughBlock: throughBlock,
+	}
+}
+
+func (s *BurnRealizedOutcomeService) cachedBurnRealizedFlowEvents(
+	key burnRealizedFlowCacheKey,
+) (burnRealizedFlowEventSet, bool) {
+	if s == nil {
+		return burnRealizedFlowEventSet{}, false
+	}
+
+	s.flowCacheMu.Lock()
+	defer s.flowCacheMu.Unlock()
+
+	value, exists := s.flowCache[key]
+	return value, exists
+}
+
+func (s *BurnRealizedOutcomeService) storeBurnRealizedFlowEvents(
+	key burnRealizedFlowCacheKey,
+	value burnRealizedFlowEventSet,
+) {
+	if s == nil {
+		return
+	}
+
+	s.flowCacheMu.Lock()
+	defer s.flowCacheMu.Unlock()
+
+	if s.flowCache == nil {
+		s.flowCache = make(
+			map[burnRealizedFlowCacheKey]burnRealizedFlowEventSet,
+		)
+	}
+
+	s.flowCache[key] = value
+}
+
+func (s *BurnRealizedOutcomeService) releaseBurnRealizedFlowEvents(
+	burn domain.BurnCandidate,
+	throughBlock uint64,
+) {
+	if s == nil {
+		return
+	}
+
+	key := newBurnRealizedFlowCacheKey(
+		burn,
+		throughBlock,
+	)
+
+	s.flowCacheMu.Lock()
+	defer s.flowCacheMu.Unlock()
+
+	delete(s.flowCache, key)
 }
 
 func (s *BurnRealizedOutcomeService) loadBurnRealizedFlowEvents(
@@ -72,49 +151,30 @@ func (s *BurnRealizedOutcomeService) loadBurnRealizedFlowEvents(
 		)
 	}
 
-	flowProvider, providerAvailable :=
-		s.provider.(BurnRealizedFlowProvider)
+	cacheKey := newBurnRealizedFlowCacheKey(
+		burn,
+		throughBlock,
+	)
+
+	if cached, exists := s.cachedBurnRealizedFlowEvents(
+		cacheKey,
+	); exists {
+		return cached, nil
+	}
 
 	flowRepository, repositoryAvailable :=
 		s.repository.(BurnRealizedFlowRepository)
 
-	if !providerAvailable ||
-		!repositoryAvailable {
+	if !repositoryAvailable {
 		if require {
 			return burnRealizedFlowEventSet{}, fmt.Errorf(
-				"load burn realized flow events: flow controls are required but provider/repository capabilities are unavailable: provider=%t repository=%t",
-				providerAvailable,
-				repositoryAvailable,
+				"load burn realized flow events: local flow controls are required but repository capability is unavailable",
 			)
 		}
 
 		return burnRealizedFlowEventSet{
 			Available: false,
 		}, nil
-	}
-
-	metadata, err :=
-		flowProvider.PoolMetadata(
-			ctx,
-			burn.PoolAddress,
-		)
-	if err != nil {
-		return burnRealizedFlowEventSet{}, fmt.Errorf(
-			"load burn realized flow events: load pool metadata: %w",
-			err,
-		)
-	}
-
-	if normalizeAddress(
-		metadata.Address,
-	) != normalizeAddress(
-		burn.PoolAddress,
-	) {
-		return burnRealizedFlowEventSet{}, fmt.Errorf(
-			"load burn realized flow events: metadata pool %s does not match burn pool %s",
-			metadata.Address,
-			burn.PoolAddress,
-		)
 	}
 
 	liquidityChanges, err :=
@@ -127,42 +187,47 @@ func (s *BurnRealizedOutcomeService) loadBurnRealizedFlowEvents(
 			)
 	if err != nil {
 		return burnRealizedFlowEventSet{}, fmt.Errorf(
-			"load burn realized flow events: load liquidity changes: %w",
+			"load burn realized flow events: load local liquidity changes: %w",
 			err,
 		)
 	}
 
 	swaps, err :=
-		fetchBurnRealizedFlowSwaps(
-			ctx,
-			flowProvider,
-			metadata,
-			burn.Cursor,
-			throughBlock,
-			defaultBurnRealizedFlowSwapPageSize,
-		)
+		flowRepository.
+			LoadSwapsAfterCursorThroughBlock(
+				ctx,
+				burn.PoolAddress,
+				burn.Cursor,
+				throughBlock,
+			)
 	if err != nil {
 		return burnRealizedFlowEventSet{}, fmt.Errorf(
-			"load burn realized flow events: load swaps: %w",
+			"load burn realized flow events: load local swaps: %w",
 			err,
 		)
 	}
 
-	return burnRealizedFlowEventSet{
+	result := burnRealizedFlowEventSet{
 		Available: true,
 
 		BurnCursor: burn.Cursor,
 
 		ThroughBlock: throughBlock,
 
-		LiquidityChanges: cloneBurnFlowLiquidityChanges(
-			liquidityChanges,
-		),
+		LiquidityChanges: liquidityChanges,
 
-		Swaps: cloneBurnFlowSwaps(
-			swaps,
-		),
-	}, nil
+		Swaps: swaps,
+	}
+
+	// Consumers treat the event set as immutable. Reusing the same slices avoids
+	// a second PostgreSQL range scan and a second full deep clone during
+	// counterfactual construction.
+	s.storeBurnRealizedFlowEvents(
+		cacheKey,
+		result,
+	)
+
+	return result, nil
 }
 
 func fetchBurnRealizedFlowSwaps(
