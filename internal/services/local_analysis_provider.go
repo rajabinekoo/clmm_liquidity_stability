@@ -263,6 +263,55 @@ func (p *LocalAnalysisProvider) PoolMetadata(
 	return p.metadata, nil
 }
 
+// PoolEventsAfterCursorThroughBlock returns the immutable local event window
+// strictly after startCursor and through the end of throughBlock. The returned
+// slice owns its header, while event payload pointers remain read-only views of
+// the provider bootstrap. Analyzer services must never mutate them.
+func (p *LocalAnalysisProvider) PoolEventsAfterCursorThroughBlock(
+	ctx context.Context,
+	poolAddress string,
+	startCursor domain.EventCursor,
+	throughBlock uint64,
+) ([]domain.PoolBlockEvent, error) {
+	if err := p.Prepare(ctx); err != nil {
+		return nil, err
+	}
+	if normalizeAddress(poolAddress) != p.poolAddress {
+		return nil, fmt.Errorf(
+			"load local event window: pool %s does not match prepared pool %s",
+			poolAddress,
+			p.poolAddress,
+		)
+	}
+	if err := startCursor.Validate(); err != nil {
+		return nil, fmt.Errorf("load local event window: invalid start cursor: %w", err)
+	}
+	if throughBlock < startCursor.BlockNumber {
+		return nil, fmt.Errorf(
+			"load local event window: through block %d is before start block %d",
+			throughBlock,
+			startCursor.BlockNumber,
+		)
+	}
+	if throughBlock > p.indexedThrough {
+		return nil, fmt.Errorf(
+			"load local event window: through block %d exceeds indexed head %d",
+			throughBlock,
+			p.indexedThrough,
+		)
+	}
+
+	start := sort.Search(len(p.events), func(index int) bool {
+		return p.events[index].Cursor.After(startCursor)
+	})
+	end := sort.Search(len(p.events), func(index int) bool {
+		return p.events[index].Cursor.BlockNumber > throughBlock
+	})
+
+	result := append([]domain.PoolBlockEvent(nil), p.events[start:end]...)
+	return result, nil
+}
+
 func (p *LocalAnalysisProvider) PoolSnapshotAt(
 	ctx context.Context,
 	poolAddress string,

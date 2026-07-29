@@ -168,3 +168,46 @@ func TestMergeLocalAnalysisEventsAcceptsObservedZeroOutputSwap(t *testing.T) {
 		t.Fatalf("events = %#v, want one swap", events)
 	}
 }
+
+func TestLocalAnalysisProviderReturnsInMemoryEventWindow(t *testing.T) {
+	t.Parallel()
+
+	sqrtPrice := new(big.Int).Lsh(big.NewInt(1), 96)
+	currentTick := 0
+	repository := &fakeLocalAnalysisRepository{
+		bootstrap: repositories.LocalAnalysisBootstrap{
+			Metadata:       domain.Pool{Address: localAnalysisTestPool, FeeTier: 500, CreatedBlock: 1},
+			IndexedThrough: 102,
+			AnchorInput: domain.ReconstructionInput{
+				Snapshot: domain.ReconstructionSnapshot{
+					PoolAddress:  localAnalysisTestPool,
+					BlockNumber:  100,
+					SqrtPriceX96: new(big.Int).Set(sqrtPrice),
+					CurrentTick:  &currentTick,
+					Liquidity:    big.NewInt(100),
+				},
+				Changes: []domain.LiquidityChange{{
+					ID: "anchor", BlockNumber: 90, LogIndex: 1,
+					TickLower: -10, TickUpper: 10, LiquidityDelta: big.NewInt(100),
+				}},
+			},
+			LiquidityChanges: []domain.LiquidityChange{
+				{ID: "mint-101", BlockNumber: 101, LogIndex: 1, TickLower: -10, TickUpper: 10, LiquidityDelta: big.NewInt(10)},
+				{ID: "burn-102", BlockNumber: 102, LogIndex: 1, TickLower: -10, TickUpper: 10, LiquidityDelta: big.NewInt(-5)},
+			},
+		},
+	}
+	provider := NewLocalAnalysisProvider(repository, localAnalysisTestPool, 100)
+	events, err := provider.PoolEventsAfterCursorThroughBlock(
+		context.Background(),
+		localAnalysisTestPool,
+		domain.EventCursor{BlockNumber: 100, LogIndex: 0},
+		101,
+	)
+	if err != nil {
+		t.Fatalf("PoolEventsAfterCursorThroughBlock() error = %v", err)
+	}
+	if len(events) != 1 || events[0].Cursor.BlockNumber != 101 {
+		t.Fatalf("events = %#v, want only block 101", events)
+	}
+}
