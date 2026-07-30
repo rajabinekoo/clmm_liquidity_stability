@@ -234,6 +234,53 @@ func run() error {
 		return err
 	}
 
+	amountGridResolver, err := newAnalyzerAmountGridResolver(config, simulator, curveAmounts)
+	if err != nil {
+		return fmt.Errorf("build analysis amount grid resolver: %w", err)
+	}
+	analysisGrid, analysisZeroForOneAmounts, analysisOneForZeroAmounts, err := resolveAnalyzerAmountGrid(
+		ctx,
+		amountGridResolver,
+		pool,
+	)
+	if err != nil {
+		return fmt.Errorf("resolve latest normalized analysis amount grid: %w", err)
+	}
+	defer func() {
+		if outputErr := writeAnalyzerAmountGridOutputs(outputDir, pool, config, amountGridResolver); outputErr != nil {
+			slog.Warn("write normalized analysis amount grid outputs", "error", outputErr)
+		}
+	}()
+
+	for index, point := range analysisGrid.ZeroForOne {
+		slog.Info(
+			"normalized amount grid point",
+			"state_id", analysisGrid.StateID,
+			"mode", analysisGrid.Mode,
+			"zero_for_one", true,
+			"point_index", index,
+			"target_impact_bps", point.TargetImpactBps.String(),
+			"amount_in_raw", point.AmountInRaw.String(),
+			"amount_out_raw", point.AmountOutRaw.String(),
+			"output_quantization_bound_bps", point.OutputQuantizationBoundBps.String(),
+			"achieved_impact_bps", point.AchievedImpactBps.String(),
+		)
+	}
+	for index, point := range analysisGrid.OneForZero {
+		slog.Info(
+			"normalized amount grid point",
+			"state_id", analysisGrid.StateID,
+			"mode", analysisGrid.Mode,
+			"zero_for_one", false,
+			"point_index", index,
+			"target_impact_bps", point.TargetImpactBps.String(),
+			"amount_in_raw", point.AmountInRaw.String(),
+			"amount_out_raw", point.AmountOutRaw.String(),
+			"output_quantization_bound_bps", point.OutputQuantizationBoundBps.String(),
+			"achieved_impact_bps", point.AchievedImpactBps.String(),
+		)
+	}
+
 	amountIn := new(big.Int).Set(curveAmounts[0])
 
 	swap1, err := simulator.SimulateExactInput(
@@ -354,7 +401,7 @@ func run() error {
 		ctx,
 		services.LiquidityImpactRequest{
 			Pool:                pool,
-			AmountsIn:           curveAmounts,
+			AmountsIn:           analysisZeroForOneAmounts,
 			ZeroForOne:          true,
 			PositionLimit:       config.PositionLimit,
 			ThresholdsBps:       thresholdsBps,
@@ -402,20 +449,12 @@ func run() error {
 		}
 	}
 
-	token1Amounts, err := token1EquivalentAmounts(
-		curveAmounts,
-		pool.SqrtPriceX96,
-	)
-	if err != nil {
-		return err
-	}
-
 	bidirectionalReport, err := impactService.AnalyzeBidirectionalActivePositions(
 		ctx,
 		services.BidirectionalLiquidityImpactRequest{
 			Pool:                pool,
-			ZeroForOneAmountsIn: curveAmounts,
-			OneForZeroAmountsIn: token1Amounts,
+			ZeroForOneAmountsIn: analysisZeroForOneAmounts,
+			OneForZeroAmountsIn: analysisOneForZeroAmounts,
 			PositionLimit:       config.PositionLimit,
 			ThresholdsBps:       thresholdsBps,
 			PositionCoverageBps: config.PositionCoverageBps,
@@ -508,9 +547,9 @@ func run() error {
 
 				BaseReport: bidirectionalReport,
 
-				ZeroForOneAmountsIn: curveAmounts,
+				ZeroForOneAmountsIn: analysisZeroForOneAmounts,
 
-				OneForZeroAmountsIn: token1Amounts,
+				OneForZeroAmountsIn: analysisOneForZeroAmounts,
 
 				ThresholdsBps: thresholdsBps,
 
@@ -642,7 +681,8 @@ func run() error {
 			StepBlocks:     config.StepBlocks,
 			MaxSnapshots:   config.MaxSnapshots,
 
-			ZeroForOneAmountsIn: curveAmounts,
+			ZeroForOneAmountsIn: analysisZeroForOneAmounts,
+			AmountGridResolver:  amountGridResolver,
 			PositionLimit:       config.PositionLimit,
 			ThresholdsBps:       thresholdsBps,
 			PositionCoverageBps: config.PositionCoverageBps,
@@ -1207,8 +1247,8 @@ func run() error {
 		poolStateRepository,
 		curveService,
 		pool,
-		curveAmounts,
-		token1Amounts,
+		analysisZeroForOneAmounts,
+		analysisOneForZeroAmounts,
 		thresholdsBps,
 		burnEventStudyConfig{
 			OutputDir: outputDir,
@@ -1230,6 +1270,8 @@ func run() error {
 			MinimumSpacingBlocks: config.BurnMinimumSpacingBlocks,
 
 			RequireMaxSamples: config.BurnRequireMaxSamples,
+
+			AmountGridResolver: amountGridResolver,
 
 			Horizons: defaultBurnOutcomeHorizons(),
 		},

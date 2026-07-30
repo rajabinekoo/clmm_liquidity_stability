@@ -155,6 +155,7 @@ func (s *ControlRobustnessV2Service) Build(ctx context.Context, req ControlRobus
 		zeroForOneAmounts,
 		oneForZeroAmounts,
 		thresholds,
+		req.AmountGridResolver,
 	)
 	report.TemporalCandidateSkips = stateSkips
 	report.Manifest.CandidateStates = len(states)

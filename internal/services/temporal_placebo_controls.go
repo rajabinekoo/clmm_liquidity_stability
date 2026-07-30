@@ -30,6 +30,7 @@ type TemporalPlaceboRequest struct {
 	ZeroForOneAmountsIn            []*big.Int
 	OneForZeroAmountsIn            []*big.Int
 	ThresholdsBps                  []decimal.Decimal
+	AmountGridResolver             AnalysisAmountGridResolver
 	MinimumSpacingBlocks           uint64
 	LiquidityActionExclusionBlocks uint64
 }
@@ -162,6 +163,10 @@ type temporalPlaceboState struct {
 	AnchorBlock          uint64
 	ReferenceBlock       uint64
 	Pool                 *domain.ReconstructedPool
+	AmountGridStateID    string
+	AmountGridMode       string
+	ZeroForOneAmountsIn  []*big.Int
+	OneForZeroAmountsIn  []*big.Int
 	ZeroForOne           PriceImpactCurveSummary
 	OneForZero           PriceImpactCurveSummary
 	TotalAUCBps          decimal.Decimal
@@ -301,6 +306,7 @@ func (s *TemporalPlaceboService) Build(ctx context.Context, req TemporalPlaceboR
 		zeroForOneAmounts,
 		oneForZeroAmounts,
 		thresholds,
+		req.AmountGridResolver,
 	)
 	if len(states) < len(req.Collection.Samples) {
 		return TemporalPlaceboReport{}, fmt.Errorf(
@@ -473,7 +479,7 @@ func absUint64Diff(a, b uint64) uint64 {
 	return b - a
 }
 
-func (s *TemporalPlaceboService) buildCandidateStates(ctx context.Context, poolAddress string, blocks []uint64, zfAmounts, ofAmounts []*big.Int, thresholds []decimal.Decimal) ([]temporalPlaceboState, []TemporalPlaceboCandidateSkip) {
+func (s *TemporalPlaceboService) buildCandidateStates(ctx context.Context, poolAddress string, blocks []uint64, zfAmounts, ofAmounts []*big.Int, thresholds []decimal.Decimal, resolver AnalysisAmountGridResolver) ([]temporalPlaceboState, []TemporalPlaceboCandidateSkip) {
 	type result struct {
 		index int
 		state temporalPlaceboState
@@ -500,7 +506,34 @@ func (s *TemporalPlaceboService) buildCandidateStates(ctx context.Context, poolA
 					results <- result{index: index, err: err}
 					continue
 				}
-				zf, of, err := summarizeTemporalPlaceboPool(ctx, s.curveService, pool, zfAmounts, ofAmounts, thresholds)
+				stateZF := cloneBurnAmountGrid(zfAmounts)
+				stateOF := cloneBurnAmountGrid(ofAmounts)
+				stateID := ""
+				stateMode := AnalysisAmountGridModeRaw
+				if resolver != nil {
+					grid, gridErr := resolver.Resolve(ctx, pool)
+					if gridErr != nil {
+						results <- result{index: index, err: fmt.Errorf("resolve candidate amount grid: %w", gridErr)}
+						continue
+					}
+					if gridErr = grid.RequireComplete(); gridErr != nil {
+						results <- result{index: index, err: gridErr}
+						continue
+					}
+					stateZF, gridErr = grid.ZeroForOneAmountsIn()
+					if gridErr != nil {
+						results <- result{index: index, err: gridErr}
+						continue
+					}
+					stateOF, gridErr = grid.OneForZeroAmountsIn()
+					if gridErr != nil {
+						results <- result{index: index, err: gridErr}
+						continue
+					}
+					stateID = grid.StateID
+					stateMode = grid.Mode
+				}
+				zf, of, err := summarizeTemporalPlaceboPool(ctx, s.curveService, pool, stateZF, stateOF, thresholds)
 				if err != nil {
 					results <- result{index: index, err: err}
 					continue
@@ -510,7 +543,7 @@ func (s *TemporalPlaceboService) buildCandidateStates(ctx context.Context, poolA
 				if !total.IsZero() {
 					imbalance = zf.PriceImpactAUCBps.Sub(of.PriceImpactAUCBps).Abs().Div(total)
 				}
-				results <- result{index: index, state: temporalPlaceboState{AnchorBlock: block, ReferenceBlock: block - 1, Pool: compactTemporalPlaceboPoolState(pool), ZeroForOne: *zf, OneForZero: *of, TotalAUCBps: total, DirectionalImbalance: imbalance}}
+				results <- result{index: index, state: temporalPlaceboState{AnchorBlock: block, ReferenceBlock: block - 1, Pool: compactTemporalPlaceboPoolState(pool), AmountGridStateID: stateID, AmountGridMode: stateMode, ZeroForOneAmountsIn: cloneBurnAmountGrid(stateZF), OneForZeroAmountsIn: cloneBurnAmountGrid(stateOF), ZeroForOne: *zf, OneForZero: *of, TotalAUCBps: total, DirectionalImbalance: imbalance}}
 			}
 		}()
 	}
@@ -873,7 +906,7 @@ func (s *TemporalPlaceboService) buildObservations(ctx context.Context, poolAddr
 						rows = append(rows, row)
 						continue
 					}
-					zf, of, err := summarizeTemporalPlaceboPool(ctx, s.curveService, futurePool, zfAmounts, ofAmounts, thresholds)
+					zf, of, err := summarizeTemporalPlaceboPool(ctx, s.curveService, futurePool, state.ZeroForOneAmountsIn, state.OneForZeroAmountsIn, thresholds)
 					if err != nil {
 						row.FailureDetail = err.Error()
 						rows = append(rows, row)

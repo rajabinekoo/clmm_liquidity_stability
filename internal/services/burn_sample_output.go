@@ -526,6 +526,9 @@ func WriteBurnEventSamplesCSV(
 			"log_index",
 			"timestamp",
 			"snapshot_block",
+			"amount_grid_state_id",
+			"amount_grid_mode",
+			"target_impacts_bps",
 
 			"prior_liquidity_events",
 			"prior_swap_events",
@@ -625,6 +628,9 @@ func WriteBurnEventSamplesCSV(
 					sample.SnapshotBlock,
 					10,
 				),
+				sample.AmountGridStateID,
+				sample.AmountGridMode,
+				decimalSliceCSV(sample.TargetImpactsBps),
 
 				strconv.Itoa(
 					sample.PriorLiquidityEvents,

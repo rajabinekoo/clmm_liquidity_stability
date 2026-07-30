@@ -34,6 +34,10 @@ type BurnEventImpactRepository interface {
 type BurnEventImpactRequest struct {
 	PreBurn PreBurnStateResult
 
+	AmountGridStateID string
+	AmountGridMode    string
+	TargetImpactsBps  []decimal.Decimal
+
 	ZeroForOneAmountsIn []*big.Int
 	OneForZeroAmountsIn []*big.Int
 
@@ -54,6 +58,13 @@ type BurnDirectionalImpact struct {
 
 type BurnEventImpactResult struct {
 	Burn domain.BurnCandidate
+
+	AmountGridStateID string
+	AmountGridMode    string
+	TargetImpactsBps  []decimal.Decimal
+
+	ZeroForOneAmountsIn []*big.Int
+	OneForZeroAmountsIn []*big.Int
 
 	PreBurnPool  *domain.ReconstructedPool
 	PostBurnPool *domain.ReconstructedPool
@@ -391,6 +402,23 @@ func (s *BurnEventImpactService) Analyze(
 
 	return BurnEventImpactResult{
 		Burn: burn,
+
+		AmountGridStateID: req.AmountGridStateID,
+
+		AmountGridMode: req.AmountGridMode,
+
+		TargetImpactsBps: append(
+			[]decimal.Decimal(nil),
+			req.TargetImpactsBps...,
+		),
+
+		ZeroForOneAmountsIn: cloneBurnAmountGrid(
+			req.ZeroForOneAmountsIn,
+		),
+
+		OneForZeroAmountsIn: cloneBurnAmountGrid(
+			req.OneForZeroAmountsIn,
+		),
 
 		PreBurnPool: preBurnPool,
 

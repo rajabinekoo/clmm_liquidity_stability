@@ -383,12 +383,25 @@ func (s *BurnCounterfactualFutureService) Build(
 					continue
 				}
 
+				sampleZeroForOneAmounts, sampleOneForZeroAmounts, _, _, _, gridErr := burnEventSampleRuntimeAmountGrids(
+					sample,
+					zeroForOneAmounts,
+					oneForZeroAmounts,
+				)
+				if gridErr != nil {
+					results <- burnCounterfactualSampleBuildResult{
+						Index: sampleIndex,
+						Err:   fmt.Errorf("sample amount grid: %w", gridErr),
+					}
+					continue
+				}
+
 				observations, depths, replayAudits, ambiguousModes, err := s.analyzeSample(
 					ctx,
 					sample,
 					horizons,
-					zeroForOneAmounts,
-					oneForZeroAmounts,
+					sampleZeroForOneAmounts,
+					sampleOneForZeroAmounts,
 					thresholds,
 					actualByKey,
 				)

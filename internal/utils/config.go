@@ -28,6 +28,16 @@ type Config struct {
 
 	AmountGridToken0 string `env:"AMOUNT_GRID_TOKEN0,required"`
 
+	AnalysisAmountGridMode string `env:"ANALYSIS_AMOUNT_GRID_MODE" envDefault:"target_impact"`
+
+	NormalizedTargetImpactBps string `env:"NORMALIZED_TARGET_IMPACT_BPS" envDefault:"1,5,10,25,50"`
+
+	NormalizedGridMaxExpansions int `env:"NORMALIZED_GRID_MAX_EXPANSIONS" envDefault:"256"`
+
+	NormalizedGridMaxBisections int `env:"NORMALIZED_GRID_MAX_BISECTIONS" envDefault:"256"`
+
+	NormalizedGridMaxOutputQuantizationBps string `env:"NORMALIZED_GRID_MAX_OUTPUT_QUANTIZATION_BPS" envDefault:"0.1"`
+
 	TheGraphAPIKey string `env:"THE_GRAPH_API_KEY"`
 	PostgresURL    string `env:"POSTGRES_URL,required"`
 
@@ -90,6 +100,16 @@ type ExportedPoolConfig struct {
 	AmountGridToken0Human []string `json:"amount_grid_token0_human"`
 	AmountGridToken0Raw   []string `json:"amount_grid_token0_raw"`
 
+	AnalysisAmountGridMode string `json:"analysis_amount_grid_mode"`
+
+	NormalizedTargetImpactBps []string `json:"normalized_target_impact_bps"`
+
+	NormalizedGridMaxExpansions int `json:"normalized_grid_max_expansions"`
+
+	NormalizedGridMaxBisections int `json:"normalized_grid_max_bisections"`
+
+	NormalizedGridMaxOutputQuantizationBps string `json:"normalized_grid_max_output_quantization_bps"`
+
 	WindowSize        uint64 `json:"window_size"`
 	PageSize          int    `json:"page_size"`
 	ConfirmationDepth uint64 `json:"confirmation_depth"`
@@ -146,6 +166,9 @@ func LoadConfig() (Config, error) {
 	cfg.PoolName = strings.TrimSpace(cfg.PoolName)
 	cfg.Token0Symbol = strings.ToUpper(strings.TrimSpace(cfg.Token0Symbol))
 	cfg.Token1Symbol = strings.ToUpper(strings.TrimSpace(cfg.Token1Symbol))
+	cfg.AnalysisAmountGridMode = strings.ToLower(
+		strings.TrimSpace(cfg.AnalysisAmountGridMode),
+	)
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -200,6 +223,36 @@ func (c Config) Validate() error {
 	}
 
 	if _, err := c.AmountGridToken0Raw(); err != nil {
+		return err
+	}
+
+	switch c.AnalysisAmountGridMode {
+	case "raw", "target_impact":
+	default:
+		return fmt.Errorf(
+			"config: ANALYSIS_AMOUNT_GRID_MODE must be one of raw,target_impact",
+		)
+	}
+
+	if _, err := c.NormalizedTargetImpactBpsValues(); err != nil {
+		return err
+	}
+
+	if c.NormalizedGridMaxExpansions <= 0 ||
+		c.NormalizedGridMaxExpansions > 512 {
+		return fmt.Errorf(
+			"config: NORMALIZED_GRID_MAX_EXPANSIONS must be between 1 and 512",
+		)
+	}
+
+	if c.NormalizedGridMaxBisections <= 0 ||
+		c.NormalizedGridMaxBisections > 512 {
+		return fmt.Errorf(
+			"config: NORMALIZED_GRID_MAX_BISECTIONS must be between 1 and 512",
+		)
+	}
+
+	if _, err := c.NormalizedGridMaxOutputQuantizationBpsValue(); err != nil {
 		return err
 	}
 
@@ -478,11 +531,84 @@ func (c Config) AmountGridToken0Raw() ([]*big.Int, error) {
 	)
 }
 
+func (c Config) NormalizedTargetImpactBpsValues() ([]decimal.Decimal, error) {
+	parts := splitAmountGrid(c.NormalizedTargetImpactBps)
+	if len(parts) < 2 {
+		return nil, fmt.Errorf(
+			"config: NORMALIZED_TARGET_IMPACT_BPS must contain at least two values",
+		)
+	}
+
+	result := make([]decimal.Decimal, 0, len(parts))
+	for index, part := range parts {
+		value, err := decimal.NewFromString(part)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"config: invalid NORMALIZED_TARGET_IMPACT_BPS value %q: %w",
+				part,
+				err,
+			)
+		}
+		if value.LessThanOrEqual(decimal.Zero) {
+			return nil, fmt.Errorf(
+				"config: NORMALIZED_TARGET_IMPACT_BPS value %q must be positive",
+				part,
+			)
+		}
+		if index > 0 && !result[index-1].LessThan(value) {
+			return nil, fmt.Errorf(
+				"config: NORMALIZED_TARGET_IMPACT_BPS values must be strictly increasing",
+			)
+		}
+		result = append(result, value)
+	}
+
+	return result, nil
+}
+
+func (c Config) NormalizedGridMaxOutputQuantizationBpsValue() (
+	decimal.Decimal,
+	error,
+) {
+	raw := strings.TrimSpace(c.NormalizedGridMaxOutputQuantizationBps)
+	if raw == "" {
+		raw = "0.1"
+	}
+
+	value, err := decimal.NewFromString(raw)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf(
+			"config: invalid NORMALIZED_GRID_MAX_OUTPUT_QUANTIZATION_BPS %q: %w",
+			raw,
+			err,
+		)
+	}
+	if value.LessThanOrEqual(decimal.Zero) ||
+		value.GreaterThan(decimal.NewFromInt(1)) {
+		return decimal.Zero, fmt.Errorf(
+			"config: NORMALIZED_GRID_MAX_OUTPUT_QUANTIZATION_BPS must be greater than 0 and at most 1",
+		)
+	}
+
+	return value, nil
+}
+
 func WritePoolConfigJSON(
 	path string,
 	cfg Config,
 ) error {
 	rawAmounts, err := cfg.AmountGridToken0Raw()
+	if err != nil {
+		return err
+	}
+
+	normalizedTargets, err := cfg.NormalizedTargetImpactBpsValues()
+	if err != nil {
+		return err
+	}
+
+	maxOutputQuantizationBps, err :=
+		cfg.NormalizedGridMaxOutputQuantizationBpsValue()
 	if err != nil {
 		return err
 	}
@@ -511,6 +637,18 @@ func WritePoolConfigJSON(
 
 		AmountGridToken0Human: splitAmountGrid(cfg.AmountGridToken0),
 		AmountGridToken0Raw:   bigIntSliceToStringSlice(rawAmounts),
+
+		AnalysisAmountGridMode: cfg.AnalysisAmountGridMode,
+
+		NormalizedTargetImpactBps: decimalSliceToStringSlice(
+			normalizedTargets,
+		),
+
+		NormalizedGridMaxExpansions: cfg.NormalizedGridMaxExpansions,
+
+		NormalizedGridMaxBisections: cfg.NormalizedGridMaxBisections,
+
+		NormalizedGridMaxOutputQuantizationBps: maxOutputQuantizationBps.String(),
 
 		WindowSize:        cfg.WindowSize,
 		PageSize:          cfg.PageSize,
@@ -660,6 +798,15 @@ func bigIntSliceToStringSlice(values []*big.Int) []string {
 		}
 
 		result = append(result, value.String())
+	}
+
+	return result
+}
+
+func decimalSliceToStringSlice(values []decimal.Decimal) []string {
+	result := make([]string, len(values))
+	for index, value := range values {
+		result[index] = value.String()
 	}
 
 	return result

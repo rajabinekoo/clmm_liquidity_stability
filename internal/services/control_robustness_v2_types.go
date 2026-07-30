@@ -59,6 +59,7 @@ type ControlRobustnessV2Request struct {
 	ZeroForOneAmountsIn []*big.Int
 	OneForZeroAmountsIn []*big.Int
 	ThresholdsBps       []decimal.Decimal
+	AmountGridResolver  AnalysisAmountGridResolver
 	Config              ControlRobustnessV2Config
 }
 

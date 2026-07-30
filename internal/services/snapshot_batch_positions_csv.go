@@ -75,6 +75,8 @@ func snapshotBatchPositionsHeader(
 		"block_number",
 		"current_tick",
 		"active_liquidity",
+		"amount_grid_state_id",
+		"amount_grid_mode",
 
 		"rank",
 		"position_label",
@@ -143,6 +145,8 @@ func snapshotBatchPositionRow(
 		strconv.FormatUint(result.Pool.BlockNumber, 10),
 		strconv.Itoa(result.Pool.CurrentTick),
 		result.Pool.Liquidity.String(),
+		result.Summary.AmountGridStateID,
+		result.Summary.AmountGridMode,
 
 		strconv.Itoa(rank),
 		fmt.Sprintf("S%d_P%d", result.Summary.SnapshotIndex, rank),

@@ -25,6 +25,8 @@ const (
 	BurnSampleSkipZeroActiveLiquidityAfter BurnSampleSkipReason = "zero_active_liquidity_after_burn"
 
 	BurnSampleSkipMinimumSpacing BurnSampleSkipReason = "minimum_spacing"
+
+	BurnSampleSkipAmountGridUnavailable BurnSampleSkipReason = "analysis_amount_grid_unavailable"
 )
 
 type BurnSampleSkip struct {
@@ -52,6 +54,10 @@ type BurnEventSample struct {
 	runtime *burnEventSampleRuntime
 
 	SnapshotBlock uint64
+
+	AmountGridStateID string
+	AmountGridMode    string
+	TargetImpactsBps  []decimal.Decimal
 
 	PriorLiquidityEvents int
 	PriorSwapEvents      int
@@ -734,6 +740,8 @@ type BurnSampleCollectionRequest struct {
 	ZeroForOneAmountsIn []*big.Int
 	OneForZeroAmountsIn []*big.Int
 
+	AmountGridResolver AnalysisAmountGridResolver
+
 	ThresholdsBps []decimal.Decimal
 }
 
@@ -1125,19 +1133,54 @@ func (s *BurnSampleCollector) analyzeBurnCandidate(
 		return nil, &skipped, nil
 	}
 
+	zeroForOneAmounts := cloneBurnAmountGrid(req.ZeroForOneAmountsIn)
+	oneForZeroAmounts := cloneBurnAmountGrid(req.OneForZeroAmountsIn)
+	amountGridStateID := ""
+	amountGridMode := AnalysisAmountGridModeRaw
+	var targetImpactsBps []decimal.Decimal
+
+	if req.AmountGridResolver != nil {
+		grid, gridErr := req.AmountGridResolver.Resolve(ctx, preBurn.Pool)
+		if gridErr != nil {
+			skipped := newBurnSampleSkip(
+				candidate,
+				BurnSampleSkipAmountGridUnavailable,
+				fmt.Sprintf("resolve normalized analysis amount grid: %v", gridErr),
+			)
+			return nil, &skipped, nil
+		}
+		if gridErr = grid.RequireComplete(); gridErr != nil {
+			skipped := newBurnSampleSkip(
+				candidate,
+				BurnSampleSkipAmountGridUnavailable,
+				gridErr.Error(),
+			)
+			return nil, &skipped, nil
+		}
+		zeroForOneAmounts, gridErr = grid.ZeroForOneAmountsIn()
+		if gridErr != nil {
+			return nil, nil, fmt.Errorf("extract normalized zero_for_one grid: %w", gridErr)
+		}
+		oneForZeroAmounts, gridErr = grid.OneForZeroAmountsIn()
+		if gridErr != nil {
+			return nil, nil, fmt.Errorf("extract normalized one_for_zero grid: %w", gridErr)
+		}
+		amountGridStateID = grid.StateID
+		amountGridMode = grid.Mode
+		targetImpactsBps = append([]decimal.Decimal(nil), grid.TargetImpactsBps...)
+	}
+
 	impact, err :=
 		s.impactAnalyzer.Analyze(
 			ctx,
 			BurnEventImpactRequest{
-				PreBurn: preBurn,
+				PreBurn:           preBurn,
+				AmountGridStateID: amountGridStateID,
+				AmountGridMode:    amountGridMode,
+				TargetImpactsBps:  targetImpactsBps,
 
-				ZeroForOneAmountsIn: cloneBurnAmountGrid(
-					req.ZeroForOneAmountsIn,
-				),
-
-				OneForZeroAmountsIn: cloneBurnAmountGrid(
-					req.OneForZeroAmountsIn,
-				),
+				ZeroForOneAmountsIn: zeroForOneAmounts,
+				OneForZeroAmountsIn: oneForZeroAmounts,
 
 				ThresholdsBps: append(
 					[]decimal.Decimal(nil),
@@ -1695,6 +1738,13 @@ func newBurnEventSample(
 
 			SnapshotBlock: preBurn.SnapshotBlock,
 
+			AmountGridStateID: impact.AmountGridStateID,
+			AmountGridMode:    impact.AmountGridMode,
+			TargetImpactsBps: append(
+				[]decimal.Decimal(nil),
+				impact.TargetImpactsBps...,
+			),
+
 			PriorLiquidityEvents: preBurn.PriorLiquidityEvents,
 
 			PriorSwapEvents: preBurn.PriorSwapEvents,
@@ -1804,6 +1854,18 @@ func newBurnEventSample(
 			"attach runtime pool states: %w",
 			err,
 		)
+	}
+	if len(impact.ZeroForOneAmountsIn) > 0 || len(impact.OneForZeroAmountsIn) > 0 {
+		if err := attachBurnEventSampleAmountGridRuntime(
+			&sample,
+			impact.AmountGridStateID,
+			impact.AmountGridMode,
+			impact.TargetImpactsBps,
+			impact.ZeroForOneAmountsIn,
+			impact.OneForZeroAmountsIn,
+		); err != nil {
+			return BurnEventSample{}, fmt.Errorf("attach runtime amount grid: %w", err)
+		}
 	}
 
 	return sample, nil

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
 )
 
@@ -13,6 +15,13 @@ import (
 type burnEventSampleRuntime struct {
 	PreBurnPool  *domain.ReconstructedPool
 	PostBurnPool *domain.ReconstructedPool
+
+	AmountGridStateID string
+	AmountGridMode    string
+	TargetImpactsBps  []decimal.Decimal
+
+	ZeroForOneAmountsIn []*big.Int
+	OneForZeroAmountsIn []*big.Int
 }
 
 func attachBurnEventSampleRuntime(
@@ -52,12 +61,80 @@ func attachBurnEventSampleRuntime(
 		return fmt.Errorf("attach burn sample runtime: active liquidity mismatch")
 	}
 
+	previous := sample.runtime
 	sample.runtime = &burnEventSampleRuntime{
 		PreBurnPool:  cloneBurnRuntimePool(preBurnPool),
 		PostBurnPool: cloneBurnRuntimePool(postBurnPool),
 	}
+	if previous != nil {
+		sample.runtime.AmountGridStateID = previous.AmountGridStateID
+		sample.runtime.AmountGridMode = previous.AmountGridMode
+		sample.runtime.TargetImpactsBps = append([]decimal.Decimal(nil), previous.TargetImpactsBps...)
+		sample.runtime.ZeroForOneAmountsIn = cloneBurnAmountGrid(previous.ZeroForOneAmountsIn)
+		sample.runtime.OneForZeroAmountsIn = cloneBurnAmountGrid(previous.OneForZeroAmountsIn)
+	}
 
 	return nil
+}
+
+func attachBurnEventSampleAmountGridRuntime(
+	sample *BurnEventSample,
+	stateID string,
+	mode string,
+	targets []decimal.Decimal,
+	zeroForOneAmounts []*big.Int,
+	oneForZeroAmounts []*big.Int,
+) error {
+	if sample == nil {
+		return fmt.Errorf("attach burn sample amount grid runtime: sample is nil")
+	}
+	zf, err := normalizeBurnAmountGrid("runtime zero_for_one", zeroForOneAmounts)
+	if err != nil {
+		return err
+	}
+	of, err := normalizeBurnAmountGrid("runtime one_for_zero", oneForZeroAmounts)
+	if err != nil {
+		return err
+	}
+	if len(zf) != len(of) {
+		return fmt.Errorf("attach burn sample amount grid runtime: directional grid lengths differ")
+	}
+	if sample.runtime == nil {
+		sample.runtime = &burnEventSampleRuntime{}
+	}
+	sample.runtime.AmountGridStateID = stateID
+	sample.runtime.AmountGridMode = mode
+	sample.runtime.TargetImpactsBps = append([]decimal.Decimal(nil), targets...)
+	sample.runtime.ZeroForOneAmountsIn = cloneBurnAmountGrid(zf)
+	sample.runtime.OneForZeroAmountsIn = cloneBurnAmountGrid(of)
+	return nil
+}
+
+func burnEventSampleRuntimeAmountGrids(
+	sample BurnEventSample,
+	fallbackZeroForOne []*big.Int,
+	fallbackOneForZero []*big.Int,
+) ([]*big.Int, []*big.Int, string, string, []decimal.Decimal, error) {
+	if sample.runtime != nil && len(sample.runtime.ZeroForOneAmountsIn) > 0 && len(sample.runtime.OneForZeroAmountsIn) > 0 {
+		zf, err := normalizeBurnAmountGrid("sample runtime zero_for_one", sample.runtime.ZeroForOneAmountsIn)
+		if err != nil {
+			return nil, nil, "", "", nil, err
+		}
+		of, err := normalizeBurnAmountGrid("sample runtime one_for_zero", sample.runtime.OneForZeroAmountsIn)
+		if err != nil {
+			return nil, nil, "", "", nil, err
+		}
+		return zf, of, sample.runtime.AmountGridStateID, sample.runtime.AmountGridMode, append([]decimal.Decimal(nil), sample.runtime.TargetImpactsBps...), nil
+	}
+	zf, err := normalizeBurnAmountGrid("fallback zero_for_one", fallbackZeroForOne)
+	if err != nil {
+		return nil, nil, "", "", nil, err
+	}
+	of, err := normalizeBurnAmountGrid("fallback one_for_zero", fallbackOneForZero)
+	if err != nil {
+		return nil, nil, "", "", nil, err
+	}
+	return zf, of, "", AnalysisAmountGridModeRaw, nil, nil
 }
 
 func burnEventSampleRuntimePools(

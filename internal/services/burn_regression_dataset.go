@@ -688,6 +688,19 @@ func (s *BurnRealizedDatasetService) Build(
 		previousBurnCursor =
 			&currentCursor
 
+		sampleZeroForOneAmounts, sampleOneForZeroAmounts, _, _, _, gridErr := burnEventSampleRuntimeAmountGrids(
+			sample,
+			zeroForOneAmounts,
+			oneForZeroAmounts,
+		)
+		if gridErr != nil {
+			return BurnRealizedDatasetReport{}, fmt.Errorf(
+				"build burn realized dataset: sample %s amount grid: %w",
+				sample.Burn.EventKey(),
+				gridErr,
+			)
+		}
+
 		outcomeReport, err :=
 			s.analyzer.Analyze(
 				ctx,
@@ -705,11 +718,11 @@ func (s *BurnRealizedDatasetService) Build(
 					),
 
 					ZeroForOneAmountsIn: cloneBurnAmountGrid(
-						zeroForOneAmounts,
+						sampleZeroForOneAmounts,
 					),
 
 					OneForZeroAmountsIn: cloneBurnAmountGrid(
-						oneForZeroAmounts,
+						sampleOneForZeroAmounts,
 					),
 
 					ThresholdsBps: append(

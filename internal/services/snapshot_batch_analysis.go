@@ -52,8 +52,11 @@ type SnapshotBatchRequest struct {
 	MaxSnapshots   int
 
 	ZeroForOneAmountsIn []*big.Int
-	PositionLimit       int
-	ThresholdsBps       []decimal.Decimal
+
+	AmountGridResolver AnalysisAmountGridResolver
+
+	PositionLimit int
+	ThresholdsBps []decimal.Decimal
 
 	PositionCoverageBps int64
 
@@ -70,6 +73,9 @@ type SnapshotBatchResult struct {
 	CurrentTick int
 
 	ActiveLiquidity string
+
+	AmountGridStateID string
+	AmountGridMode    string
 
 	PositionCount int
 
@@ -140,7 +146,7 @@ func (s *SnapshotBatchAnalysisService) Analyze(
 			positionCoverageDenominator,
 		)
 	}
-	if len(req.ZeroForOneAmountsIn) == 0 {
+	if req.AmountGridResolver == nil && len(req.ZeroForOneAmountsIn) == 0 {
 		return nil, fmt.Errorf("snapshot batch analysis: zero_for_one amounts are required")
 	}
 	if len(req.ThresholdsBps) == 0 {
@@ -214,19 +220,50 @@ func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
 		)
 	}
 
-	oneForZeroAmountsIn, err := batchToken1EquivalentAmounts(
-		req.ZeroForOneAmountsIn,
-		pool.SqrtPriceX96,
-	)
-	if err != nil {
-		return SnapshotBatchDetailedResult{}, err
+	zeroForOneAmountsIn := req.ZeroForOneAmountsIn
+	oneForZeroAmountsIn := []*big.Int(nil)
+	amountGridStateID := ""
+	amountGridMode := AnalysisAmountGridModeRaw
+
+	if req.AmountGridResolver != nil {
+		grid, gridErr := req.AmountGridResolver.Resolve(ctx, pool)
+		if gridErr != nil {
+			return SnapshotBatchDetailedResult{}, fmt.Errorf(
+				"resolve analysis amount grid: %w",
+				gridErr,
+			)
+		}
+		if gridErr = grid.RequireComplete(); gridErr != nil {
+			return SnapshotBatchDetailedResult{}, gridErr
+		}
+
+		zeroForOneAmountsIn, gridErr = grid.ZeroForOneAmountsIn()
+		if gridErr != nil {
+			return SnapshotBatchDetailedResult{}, gridErr
+		}
+		oneForZeroAmountsIn, gridErr = grid.OneForZeroAmountsIn()
+		if gridErr != nil {
+			return SnapshotBatchDetailedResult{}, gridErr
+		}
+
+		amountGridStateID = grid.StateID
+		amountGridMode = grid.Mode
+	} else {
+		var gridErr error
+		oneForZeroAmountsIn, gridErr = batchToken1EquivalentAmounts(
+			req.ZeroForOneAmountsIn,
+			pool.SqrtPriceX96,
+		)
+		if gridErr != nil {
+			return SnapshotBatchDetailedResult{}, gridErr
+		}
 	}
 
 	report, err := s.impact.AnalyzeBidirectionalActivePositions(
 		ctx,
 		BidirectionalLiquidityImpactRequest{
 			Pool:                pool,
-			ZeroForOneAmountsIn: req.ZeroForOneAmountsIn,
+			ZeroForOneAmountsIn: zeroForOneAmountsIn,
 			OneForZeroAmountsIn: oneForZeroAmountsIn,
 			PositionLimit:       req.PositionLimit,
 			ThresholdsBps:       req.ThresholdsBps,
@@ -245,7 +282,7 @@ func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
 
 				BaseReport: report,
 
-				ZeroForOneAmountsIn: req.ZeroForOneAmountsIn,
+				ZeroForOneAmountsIn: zeroForOneAmountsIn,
 
 				OneForZeroAmountsIn: oneForZeroAmountsIn,
 
@@ -276,6 +313,8 @@ func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
 		pool,
 		report,
 	)
+	summary.AmountGridStateID = amountGridStateID
+	summary.AmountGridMode = amountGridMode
 
 	return SnapshotBatchDetailedResult{
 		Summary: summary,
@@ -450,6 +489,8 @@ func snapshotBatchCSVHeader() []string {
 		"block_number",
 		"current_tick",
 		"active_liquidity",
+		"amount_grid_state_id",
+		"amount_grid_mode",
 		"position_count",
 
 		"zero_for_one_base_auc_bps",
@@ -484,6 +525,8 @@ func snapshotBatchCSVRow(
 		strconv.FormatUint(result.BlockNumber, 10),
 		strconv.Itoa(result.CurrentTick),
 		result.ActiveLiquidity,
+		result.AmountGridStateID,
+		result.AmountGridMode,
 		strconv.Itoa(result.PositionCount),
 
 		result.ZeroForOneBaseAUCBps.String(),
