@@ -24,6 +24,7 @@ COMPOSE        ?= docker compose -f $(COMPOSE_FILE)
 # App commands
 INDEXER_CMD := go run ./cmd/indexer/main.go
 ANALYZER_CMD := go run ./cmd/analyzer
+CONTROL_FREEZE_CMD := go run ./cmd/controlfreeze
 
 .PHONY: infra-up
 infra-up:
@@ -103,6 +104,30 @@ analyze-usdc-usdt-001:
 
 .PHONY: analyze-pools
 analyze-pools: analyze-usdc-weth-005 analyze-usdc-weth-030 analyze-wbtc-weth-030 analyze-weth-usdt-005 analyze-usdc-usdt-001
+
+.PHONY: freeze-controls-usdc-weth-005
+freeze-controls-usdc-weth-005:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/usdc_weth_005
+
+.PHONY: freeze-controls-usdc-weth-030
+freeze-controls-usdc-weth-030:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/usdc_weth_030
+
+.PHONY: freeze-controls-wbtc-weth-030
+freeze-controls-wbtc-weth-030:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/wbtc_weth_030
+
+.PHONY: freeze-controls-weth-usdt-005
+freeze-controls-weth-usdt-005:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/weth_usdt_005
+
+.PHONY: freeze-controls-usdc-usdt-001
+freeze-controls-usdc-usdt-001:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/usdc_usdt_001
+
+.PHONY: freeze-controls
+freeze-controls: freeze-controls-usdc-weth-005 freeze-controls-usdc-weth-030 freeze-controls-wbtc-weth-030 freeze-controls-weth-usdt-005 freeze-controls-usdc-usdt-001
+
 
 .PHONY: research-pipeline
 research-pipeline: index-pools analyze-pools

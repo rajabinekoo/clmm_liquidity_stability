@@ -510,7 +510,7 @@ func (s *TemporalPlaceboService) buildCandidateStates(ctx context.Context, poolA
 				if !total.IsZero() {
 					imbalance = zf.PriceImpactAUCBps.Sub(of.PriceImpactAUCBps).Abs().Div(total)
 				}
-				results <- result{index: index, state: temporalPlaceboState{AnchorBlock: block, ReferenceBlock: block - 1, Pool: pool, ZeroForOne: *zf, OneForZero: *of, TotalAUCBps: total, DirectionalImbalance: imbalance}}
+				results <- result{index: index, state: temporalPlaceboState{AnchorBlock: block, ReferenceBlock: block - 1, Pool: compactTemporalPlaceboPoolState(pool), ZeroForOne: *zf, OneForZero: *of, TotalAUCBps: total, DirectionalImbalance: imbalance}}
 			}
 		}()
 	}
@@ -549,6 +549,24 @@ func (s *TemporalPlaceboService) buildCandidateStates(ctx context.Context, poolA
 		})
 	}
 	return states, skips
+}
+
+func compactTemporalPlaceboPoolState(pool *domain.ReconstructedPool) *domain.ReconstructedPool {
+	if pool == nil {
+		return nil
+	}
+	result := &domain.ReconstructedPool{
+		PoolAddress: pool.PoolAddress,
+		BlockNumber: pool.BlockNumber,
+		CurrentTick: pool.CurrentTick,
+	}
+	if pool.SqrtPriceX96 != nil {
+		result.SqrtPriceX96 = new(big.Int).Set(pool.SqrtPriceX96)
+	}
+	if pool.Liquidity != nil {
+		result.Liquidity = new(big.Int).Set(pool.Liquidity)
+	}
+	return result
 }
 
 func temporalPlaceboCandidateSkipDetail(err error) string {
