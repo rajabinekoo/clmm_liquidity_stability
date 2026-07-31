@@ -10,7 +10,8 @@ import (
 
 func ValidateBurnRegressionReadiness(
 	report BurnRealizedDatasetReport,
-	expectedBurnSamples int,
+	maximumBurnSamples int,
+	requireMaximumBurnSamples bool,
 	horizons []BurnOutcomeHorizon,
 	minimumSpacingBlocks uint64,
 ) error {
@@ -21,12 +22,6 @@ func ValidateBurnRegressionReadiness(
 		return fmt.Errorf(
 			"validate burn regression readiness: invalid dataset: %w",
 			err,
-		)
-	}
-
-	if expectedBurnSamples <= 0 {
-		return fmt.Errorf(
-			"validate burn regression readiness: expected burn samples must be positive",
 		)
 	}
 
@@ -55,52 +50,15 @@ func ValidateBurnRegressionReadiness(
 		)
 	}
 
-	if report.BurnSamples !=
-		expectedBurnSamples {
-		return fmt.Errorf(
-			"validate burn regression readiness: burn samples=%d, expected=%d",
-			report.BurnSamples,
-			expectedBurnSamples,
-		)
-	}
-
-	if report.HorizonsPerSample !=
-		len(normalizedHorizons) {
-		return fmt.Errorf(
-			"validate burn regression readiness: horizons per sample=%d, expected=%d",
-			report.HorizonsPerSample,
+	actualBurnSamples, err :=
+		validateBurnRegressionReadinessCardinality(
+			report,
+			maximumBurnSamples,
+			requireMaximumBurnSamples,
 			len(normalizedHorizons),
 		)
-	}
-
-	expectedObservations :=
-		expectedBurnSamples *
-			len(normalizedHorizons)
-
-	if report.CandidateHorizonPairs !=
-		expectedObservations {
-		return fmt.Errorf(
-			"validate burn regression readiness: candidate pairs=%d, expected=%d",
-			report.CandidateHorizonPairs,
-			expectedObservations,
-		)
-	}
-
-	if report.ObservedHorizonPairs !=
-		expectedObservations {
-		return fmt.Errorf(
-			"validate burn regression readiness: observed pairs=%d, expected=%d",
-			report.ObservedHorizonPairs,
-			expectedObservations,
-		)
-	}
-
-	if report.SkippedHorizonPairs != 0 ||
-		len(report.Skipped) != 0 {
-		return fmt.Errorf(
-			"validate burn regression readiness: dataset contains %d skipped horizon pairs",
-			report.SkippedHorizonPairs,
-		)
+	if err != nil {
+		return err
 	}
 
 	expectedHorizonBlocks :=
@@ -116,13 +74,13 @@ func ValidateBurnRegressionReadiness(
 	observationGroups :=
 		make(
 			map[string][]BurnRegressionObservation,
-			expectedBurnSamples,
+			actualBurnSamples,
 		)
 
 	burns :=
 		make(
 			map[string]domain.BurnCandidate,
-			expectedBurnSamples,
+			actualBurnSamples,
 		)
 
 	for index, observation := range report.Observations {
@@ -207,11 +165,11 @@ func ValidateBurnRegressionReadiness(
 	}
 
 	if len(observationGroups) !=
-		expectedBurnSamples {
+		actualBurnSamples {
 		return fmt.Errorf(
 			"validate burn regression readiness: unique burns=%d, expected=%d",
 			len(observationGroups),
-			expectedBurnSamples,
+			actualBurnSamples,
 		)
 	}
 
@@ -354,6 +312,86 @@ func ValidateBurnRegressionReadiness(
 	}
 
 	return nil
+}
+
+func validateBurnRegressionReadinessCardinality(
+	report BurnRealizedDatasetReport,
+	maximumBurnSamples int,
+	requireMaximumBurnSamples bool,
+	expectedHorizonsPerSample int,
+) (int, error) {
+	if maximumBurnSamples <= 0 {
+		return 0, fmt.Errorf(
+			"validate burn regression readiness: maximum burn samples must be positive",
+		)
+	}
+
+	if report.BurnSamples <= 0 {
+		return 0, fmt.Errorf(
+			"validate burn regression readiness: dataset contains no burn samples",
+		)
+	}
+
+	if report.BurnSamples > maximumBurnSamples {
+		return 0, fmt.Errorf(
+			"validate burn regression readiness: burn samples=%d exceed configured maximum=%d",
+			report.BurnSamples,
+			maximumBurnSamples,
+		)
+	}
+
+	if requireMaximumBurnSamples &&
+		report.BurnSamples != maximumBurnSamples {
+		return 0, fmt.Errorf(
+			"validate burn regression readiness: burn samples=%d, required=%d",
+			report.BurnSamples,
+			maximumBurnSamples,
+		)
+	}
+
+	if expectedHorizonsPerSample <= 0 {
+		return 0, fmt.Errorf(
+			"validate burn regression readiness: expected horizons per sample must be positive",
+		)
+	}
+
+	if report.HorizonsPerSample != expectedHorizonsPerSample {
+		return 0, fmt.Errorf(
+			"validate burn regression readiness: horizons per sample=%d, expected=%d",
+			report.HorizonsPerSample,
+			expectedHorizonsPerSample,
+		)
+	}
+
+	expectedObservations :=
+		report.BurnSamples *
+			expectedHorizonsPerSample
+
+	if report.CandidateHorizonPairs != expectedObservations {
+		return 0, fmt.Errorf(
+			"validate burn regression readiness: candidate pairs=%d, expected=%d",
+			report.CandidateHorizonPairs,
+			expectedObservations,
+		)
+	}
+
+	if report.ObservedHorizonPairs != expectedObservations {
+		return 0, fmt.Errorf(
+			"validate burn regression readiness: observed pairs=%d, expected=%d",
+			report.ObservedHorizonPairs,
+			expectedObservations,
+		)
+	}
+
+	if report.SkippedHorizonPairs != 0 ||
+		len(report.Skipped) != 0 {
+		return 0, fmt.Errorf(
+			"validate burn regression readiness: dataset contains %d skipped horizon pairs",
+			report.SkippedHorizonPairs,
+		)
+	}
+
+	return report.BurnSamples, nil
 }
 
 func validateBurnRegressionFlowPrefix(

@@ -7,6 +7,122 @@ import (
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
 )
 
+func TestValidateBurnRegressionReadinessCardinalityAcceptsPartialSampleWhenMaximumIsNotRequired(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	report := BurnRealizedDatasetReport{
+		BurnSamples:           94,
+		HorizonsPerSample:     4,
+		CandidateHorizonPairs: 376,
+		ObservedHorizonPairs:  376,
+		SkippedHorizonPairs:   0,
+	}
+
+	actual, err :=
+		validateBurnRegressionReadinessCardinality(
+			report,
+			100,
+			false,
+			4,
+		)
+	if err != nil {
+		t.Fatalf(
+			"validateBurnRegressionReadinessCardinality() error = %v",
+			err,
+		)
+	}
+
+	if actual != 94 {
+		t.Fatalf(
+			"actual samples = %d, want 94",
+			actual,
+		)
+	}
+}
+
+func TestValidateBurnRegressionReadinessCardinalityRejectsPartialSampleWhenMaximumIsRequired(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	report := BurnRealizedDatasetReport{
+		BurnSamples:           94,
+		HorizonsPerSample:     4,
+		CandidateHorizonPairs: 376,
+		ObservedHorizonPairs:  376,
+		SkippedHorizonPairs:   0,
+	}
+
+	_, err :=
+		validateBurnRegressionReadinessCardinality(
+			report,
+			100,
+			true,
+			4,
+		)
+	if err == nil {
+		t.Fatal(
+			"validation error = nil, want non-nil",
+		)
+	}
+}
+
+func TestValidateBurnRegressionReadinessCardinalityUsesActualSampleCountForPairs(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	report := BurnRealizedDatasetReport{
+		BurnSamples:           94,
+		HorizonsPerSample:     4,
+		CandidateHorizonPairs: 400,
+		ObservedHorizonPairs:  400,
+		SkippedHorizonPairs:   0,
+	}
+
+	_, err :=
+		validateBurnRegressionReadinessCardinality(
+			report,
+			100,
+			false,
+			4,
+		)
+	if err == nil {
+		t.Fatal(
+			"validation error = nil, want non-nil",
+		)
+	}
+}
+
+func TestValidateBurnRegressionReadinessCardinalityRejectsSamplesAboveMaximum(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	report := BurnRealizedDatasetReport{
+		BurnSamples:           101,
+		HorizonsPerSample:     4,
+		CandidateHorizonPairs: 404,
+		ObservedHorizonPairs:  404,
+		SkippedHorizonPairs:   0,
+	}
+
+	_, err :=
+		validateBurnRegressionReadinessCardinality(
+			report,
+			100,
+			false,
+			4,
+		)
+	if err == nil {
+		t.Fatal(
+			"validation error = nil, want non-nil",
+		)
+	}
+}
+
 func TestValidateBurnRegressionFlowPrefix(
 	t *testing.T,
 ) {
