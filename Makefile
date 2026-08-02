@@ -152,3 +152,11 @@ goose-create:
 .PHONY: goose-status
 goose-status:
 	goose postgres "$(DB_CONNECTION)" -dir $(MIGRATION_DIR) status
+# Chapter 4 thesis/paper figures generated from frozen analyzer outputs.
+PYTHON ?= python3
+CHAPTER4_OUTPUTS_DIR ?= outputs
+CHAPTER4_ARTIFACT_DIR ?= artifacts/chapter4
+
+.PHONY: chapter4-figures
+chapter4-figures:
+	$(PYTHON) scripts/chapter4/generate.py --outputs-dir $(CHAPTER4_OUTPUTS_DIR) --output-dir $(CHAPTER4_ARTIFACT_DIR)

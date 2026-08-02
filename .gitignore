@@ -1,6 +1,8 @@
 .idea
 .vscode
+.venv
 venv
 outputs
 analyzer
 indexer
+artifacts
