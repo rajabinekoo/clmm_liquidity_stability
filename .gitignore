@@ -1,4 +1,6 @@
+.idea
+.vscode
 venv
-
+outputs
 analyzer
 indexer
