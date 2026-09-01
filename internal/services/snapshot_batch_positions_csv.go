@@ -75,6 +75,8 @@ func snapshotBatchPositionsHeader(
 		"block_number",
 		"current_tick",
 		"active_liquidity",
+		"amount_grid_state_id",
+		"amount_grid_mode",
 
 		"rank",
 		"position_label",
@@ -101,6 +103,11 @@ func snapshotBatchPositionsHeader(
 		"one_for_zero_lsis_bps",
 		"total_lsis_bps",
 		"max_directional_lsis_bps",
+
+		"loaded_position_count",
+		"selected_position_count",
+		"position_coverage_target_bps",
+		"position_coverage_achieved_bps",
 	}
 
 	for _, threshold := range thresholds {
@@ -138,6 +145,8 @@ func snapshotBatchPositionRow(
 		strconv.FormatUint(result.Pool.BlockNumber, 10),
 		strconv.Itoa(result.Pool.CurrentTick),
 		result.Pool.Liquidity.String(),
+		result.Summary.AmountGridStateID,
+		result.Summary.AmountGridMode,
 
 		strconv.Itoa(rank),
 		fmt.Sprintf("S%d_P%d", result.Summary.SnapshotIndex, rank),
@@ -164,6 +173,30 @@ func snapshotBatchPositionRow(
 		impact.OneForZeroLSISBps.String(),
 		impact.TotalLSISBps.String(),
 		impact.MaxDirectionalLSISBps.String(),
+
+		strconv.Itoa(
+			result.
+				Summary.
+				LoadedPositionCount,
+		),
+
+		strconv.Itoa(
+			result.
+				Summary.
+				PositionCount,
+		),
+
+		strconv.FormatInt(
+			result.
+				Summary.
+				PositionCoverageTargetBps,
+			10,
+		),
+
+		result.
+			Summary.
+			PositionCoverageAchievedBps.
+			String(),
 	}
 
 	for _, threshold := range thresholds {

@@ -33,13 +33,29 @@ type LiquidityImpactRequest struct {
 	AmountsIn     []*big.Int
 	ThresholdsBps []decimal.Decimal
 	ZeroForOne    bool
+
+	// PositionLimit is a safety cap for loading active positions.
 	PositionLimit int
+
+	// PositionCoverageBps is the minimum active-liquidity coverage
+	// that the selected position prefix must reach.
+	PositionCoverageBps int64
 }
 
 type LiquidityImpactReport struct {
 	ZeroForOne  bool
 	BaseSummary PriceImpactCurveSummary
 	Positions   []PositionLiquidityImpact
+
+	PositionLimit int
+
+	LoadedPositionCount   int
+	SelectedPositionCount int
+
+	SelectedActiveLiquidity *big.Int
+
+	PositionCoverageTargetBps   int64
+	PositionCoverageAchievedBps decimal.Decimal
 }
 
 type PositionLiquidityImpact struct {
@@ -86,6 +102,21 @@ func (s *LiquidityImpactService) AnalyzeActivePositions(
 		return nil, fmt.Errorf("liquidity impact: position_limit must be positive")
 	}
 
+	if req.PositionCoverageBps == 0 {
+		req.PositionCoverageBps =
+			defaultPositionCoverageBps
+	}
+
+	if req.PositionCoverageBps < 1 ||
+		req.PositionCoverageBps >
+			positionCoverageDenominator {
+		return nil, fmt.Errorf(
+			"liquidity impact: position_coverage_bps %d must be inside [1,%d]",
+			req.PositionCoverageBps,
+			positionCoverageDenominator,
+		)
+	}
+
 	baseCurve, err := s.curveService.Build(ctx, PriceImpactCurveRequest{
 		Pool:       req.Pool,
 		AmountsIn:  req.AmountsIn,
@@ -103,20 +134,41 @@ func (s *LiquidityImpactService) AnalyzeActivePositions(
 		return nil, fmt.Errorf("liquidity impact: summarize base curve: %w", err)
 	}
 
-	positions, err := s.repository.LoadActivePositionsAt(
-		ctx,
-		req.Pool.PoolAddress,
-		req.Pool.BlockNumber,
-		req.Pool.CurrentTick,
-		req.PositionLimit,
-	)
+	loadedPositions, err :=
+		s.repository.LoadActivePositionsAt(
+			ctx,
+			req.Pool.PoolAddress,
+			req.Pool.BlockNumber,
+			req.Pool.CurrentTick,
+			req.PositionLimit,
+		)
 	if err != nil {
-		return nil, fmt.Errorf("liquidity impact: load active positions: %w", err)
+		return nil, fmt.Errorf(
+			"liquidity impact: load active positions: %w",
+			err,
+		)
 	}
 
-	impacts := make([]PositionLiquidityImpact, 0, len(positions))
+	selection, err :=
+		selectActivePositionsByCoverage(
+			loadedPositions,
+			req.Pool.Liquidity,
+			req.PositionCoverageBps,
+		)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"liquidity impact: select positions by coverage: %w",
+			err,
+		)
+	}
 
-	for _, position := range positions {
+	impacts := make(
+		[]PositionLiquidityImpact,
+		0,
+		len(selection.Positions),
+	)
+
+	for _, position := range selection.Positions {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -194,6 +246,20 @@ func (s *LiquidityImpactService) AnalyzeActivePositions(
 		ZeroForOne:  req.ZeroForOne,
 		BaseSummary: *baseSummary,
 		Positions:   impacts,
+
+		PositionLimit: req.PositionLimit,
+
+		LoadedPositionCount: selection.LoadedPositionCount,
+
+		SelectedPositionCount: selection.SelectedPositionCount,
+
+		SelectedActiveLiquidity: new(big.Int).Set(
+			selection.SelectedLiquidity,
+		),
+
+		PositionCoverageTargetBps: selection.TargetCoverageBps,
+
+		PositionCoverageAchievedBps: selection.AchievedCoverageBps,
 	}, nil
 }
 

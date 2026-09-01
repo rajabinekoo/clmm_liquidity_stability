@@ -13,19 +13,26 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
-	"github.com/rajabinekoo/clmm-liquidity-stability/internal/providers"
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/repositories"
 	"github.com/rajabinekoo/clmm-liquidity-stability/internal/uniswapv3"
 )
 
+type SnapshotBatchProvider interface {
+	PoolSnapshotAt(
+		ctx context.Context,
+		poolAddress string,
+		blockNumber uint64,
+	) (domain.PoolSnapshot, error)
+}
+
 type SnapshotBatchAnalysisService struct {
-	provider   *providers.Client
+	provider   SnapshotBatchProvider
 	repository *repositories.PoolStateRepository
 	impact     *LiquidityImpactService
 }
 
 func NewSnapshotBatchAnalysisService(
-	provider *providers.Client,
+	provider SnapshotBatchProvider,
 	repository *repositories.PoolStateRepository,
 	impact *LiquidityImpactService,
 ) *SnapshotBatchAnalysisService {
@@ -45,8 +52,17 @@ type SnapshotBatchRequest struct {
 	MaxSnapshots   int
 
 	ZeroForOneAmountsIn []*big.Int
-	PositionLimit       int
-	ThresholdsBps       []decimal.Decimal
+
+	AmountGridResolver AnalysisAmountGridResolver
+
+	PositionLimit int
+	ThresholdsBps []decimal.Decimal
+
+	PositionCoverageBps int64
+
+	JointRemovalTopCounts []int
+
+	JointRemovalActiveLiquidityShareBps []int64
 }
 
 type SnapshotBatchResult struct {
@@ -57,6 +73,9 @@ type SnapshotBatchResult struct {
 	CurrentTick int
 
 	ActiveLiquidity string
+
+	AmountGridStateID string
+	AmountGridMode    string
 
 	PositionCount int
 
@@ -75,12 +94,21 @@ type SnapshotBatchResult struct {
 	TopMaxDirectionalBps decimal.Decimal
 
 	SumTotalLSISBps decimal.Decimal
+
+	LoadedPositionCount int
+
+	PositionCoverageTargetBps   int64
+	PositionCoverageAchievedBps decimal.Decimal
 }
 
 type SnapshotBatchDetailedResult struct {
 	Summary SnapshotBatchResult
-	Pool    *domain.ReconstructedPool
-	Report  *BidirectionalLiquidityImpactReport
+
+	Pool *domain.ReconstructedPool
+
+	Report *BidirectionalLiquidityImpactReport
+
+	JointRemoval *JointRemovalReport
 }
 
 func (s *SnapshotBatchAnalysisService) Analyze(
@@ -105,7 +133,20 @@ func (s *SnapshotBatchAnalysisService) Analyze(
 	if req.PositionLimit <= 0 {
 		req.PositionLimit = 10
 	}
-	if len(req.ZeroForOneAmountsIn) == 0 {
+	if req.PositionCoverageBps == 0 {
+		req.PositionCoverageBps =
+			defaultPositionCoverageBps
+	}
+	if req.PositionCoverageBps < 1 ||
+		req.PositionCoverageBps >
+			positionCoverageDenominator {
+		return nil, fmt.Errorf(
+			"snapshot batch analysis: position coverage bps %d must be inside [1,%d]",
+			req.PositionCoverageBps,
+			positionCoverageDenominator,
+		)
+	}
+	if req.AmountGridResolver == nil && len(req.ZeroForOneAmountsIn) == 0 {
 		return nil, fmt.Errorf("snapshot batch analysis: zero_for_one amounts are required")
 	}
 	if len(req.ThresholdsBps) == 0 {
@@ -114,6 +155,16 @@ func (s *SnapshotBatchAnalysisService) Analyze(
 			decimal.NewFromInt(50),
 			decimal.NewFromInt(100),
 		}
+	}
+	if _, err :=
+		buildJointRemovalScenarioSpecs(
+			req.JointRemovalTopCounts,
+			req.JointRemovalActiveLiquidityShareBps,
+		); err != nil {
+		return nil, fmt.Errorf(
+			"snapshot batch analysis: invalid joint-removal configuration: %w",
+			err,
+		)
 	}
 
 	blocks := snapshotCandidateBlocks(
@@ -155,51 +206,106 @@ func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
 	blockNumber uint64,
 	req SnapshotBatchRequest,
 ) (SnapshotBatchDetailedResult, error) {
-	snapshot, err := s.provider.PoolSnapshotAt(
+	pool, err := loadHistoricalPoolAt(
 		ctx,
+		s.provider,
+		s.repository,
 		req.PoolAddress,
 		blockNumber,
 	)
 	if err != nil {
 		return SnapshotBatchDetailedResult{}, fmt.Errorf(
-			"load pool snapshot: %w",
+			"load local reconstructed pool: %w",
 			err,
 		)
 	}
 
-	input, err := s.repository.LoadReconstructionInputFromSnapshot(
-		ctx,
-		snapshot,
-	)
-	if err != nil {
-		return SnapshotBatchDetailedResult{}, err
-	}
+	zeroForOneAmountsIn := req.ZeroForOneAmountsIn
+	oneForZeroAmountsIn := []*big.Int(nil)
+	amountGridStateID := ""
+	amountGridMode := AnalysisAmountGridModeRaw
 
-	pool, err := ReconstructPool(input)
-	if err != nil {
-		return SnapshotBatchDetailedResult{}, err
-	}
+	if req.AmountGridResolver != nil {
+		grid, gridErr := req.AmountGridResolver.Resolve(ctx, pool)
+		if gridErr != nil {
+			return SnapshotBatchDetailedResult{}, fmt.Errorf(
+				"resolve analysis amount grid: %w",
+				gridErr,
+			)
+		}
+		if gridErr = grid.RequireComplete(); gridErr != nil {
+			return SnapshotBatchDetailedResult{}, gridErr
+		}
 
-	oneForZeroAmountsIn, err := batchToken1EquivalentAmounts(
-		req.ZeroForOneAmountsIn,
-		pool.SqrtPriceX96,
-	)
-	if err != nil {
-		return SnapshotBatchDetailedResult{}, err
+		zeroForOneAmountsIn, gridErr = grid.ZeroForOneAmountsIn()
+		if gridErr != nil {
+			return SnapshotBatchDetailedResult{}, gridErr
+		}
+		oneForZeroAmountsIn, gridErr = grid.OneForZeroAmountsIn()
+		if gridErr != nil {
+			return SnapshotBatchDetailedResult{}, gridErr
+		}
+
+		amountGridStateID = grid.StateID
+		amountGridMode = grid.Mode
+	} else {
+		var gridErr error
+		oneForZeroAmountsIn, gridErr = batchToken1EquivalentAmounts(
+			req.ZeroForOneAmountsIn,
+			pool.SqrtPriceX96,
+		)
+		if gridErr != nil {
+			return SnapshotBatchDetailedResult{}, gridErr
+		}
 	}
 
 	report, err := s.impact.AnalyzeBidirectionalActivePositions(
 		ctx,
 		BidirectionalLiquidityImpactRequest{
 			Pool:                pool,
-			ZeroForOneAmountsIn: req.ZeroForOneAmountsIn,
+			ZeroForOneAmountsIn: zeroForOneAmountsIn,
 			OneForZeroAmountsIn: oneForZeroAmountsIn,
 			PositionLimit:       req.PositionLimit,
 			ThresholdsBps:       req.ThresholdsBps,
+			PositionCoverageBps: req.PositionCoverageBps,
 		},
 	)
 	if err != nil {
 		return SnapshotBatchDetailedResult{}, err
+	}
+
+	jointRemovalReport, err :=
+		s.impact.AnalyzeJointRemovalScenarios(
+			ctx,
+			JointRemovalRequest{
+				Pool: pool,
+
+				BaseReport: report,
+
+				ZeroForOneAmountsIn: zeroForOneAmountsIn,
+
+				OneForZeroAmountsIn: oneForZeroAmountsIn,
+
+				ThresholdsBps: req.ThresholdsBps,
+
+				TopCounts: append(
+					[]int(nil),
+					req.
+						JointRemovalTopCounts...,
+				),
+
+				TargetActiveLiquidityShareBps: append(
+					[]int64(nil),
+					req.
+						JointRemovalActiveLiquidityShareBps...,
+				),
+			},
+		)
+	if err != nil {
+		return SnapshotBatchDetailedResult{}, fmt.Errorf(
+			"analyze joint removal scenarios: %w",
+			err,
+		)
 	}
 
 	summary := summarizeSnapshotBatchResult(
@@ -207,11 +313,17 @@ func (s *SnapshotBatchAnalysisService) analyzeSingleSnapshot(
 		pool,
 		report,
 	)
+	summary.AmountGridStateID = amountGridStateID
+	summary.AmountGridMode = amountGridMode
 
 	return SnapshotBatchDetailedResult{
 		Summary: summary,
-		Pool:    pool,
-		Report:  report,
+
+		Pool: pool,
+
+		Report: report,
+
+		JointRemoval: jointRemovalReport,
 	}, nil
 }
 
@@ -229,7 +341,19 @@ func summarizeSnapshotBatchResult(
 
 		ActiveLiquidity: pool.Liquidity.String(),
 
+		LoadedPositionCount: report.
+			ZeroForOneReport.
+			LoadedPositionCount,
+
 		PositionCount: len(report.Positions),
+
+		PositionCoverageTargetBps: report.
+			ZeroForOneReport.
+			PositionCoverageTargetBps,
+
+		PositionCoverageAchievedBps: report.
+			ZeroForOneReport.
+			PositionCoverageAchievedBps,
 
 		ZeroForOneBaseAUCBps: report.ZeroForOneReport.BaseSummary.PriceImpactAUCBps,
 		OneForZeroBaseAUCBps: report.OneForZeroReport.BaseSummary.PriceImpactAUCBps,
@@ -365,6 +489,8 @@ func snapshotBatchCSVHeader() []string {
 		"block_number",
 		"current_tick",
 		"active_liquidity",
+		"amount_grid_state_id",
+		"amount_grid_mode",
 		"position_count",
 
 		"zero_for_one_base_auc_bps",
@@ -381,6 +507,12 @@ func snapshotBatchCSVHeader() []string {
 		"top_max_directional_lsis_bps",
 
 		"sum_total_lsis_bps",
+
+		"loaded_position_count",
+		"selected_position_count",
+
+		"position_coverage_target_bps",
+		"position_coverage_achieved_bps",
 	}
 }
 
@@ -393,6 +525,8 @@ func snapshotBatchCSVRow(
 		strconv.FormatUint(result.BlockNumber, 10),
 		strconv.Itoa(result.CurrentTick),
 		result.ActiveLiquidity,
+		result.AmountGridStateID,
+		result.AmountGridMode,
 		strconv.Itoa(result.PositionCount),
 
 		result.ZeroForOneBaseAUCBps.String(),
@@ -409,5 +543,22 @@ func snapshotBatchCSVRow(
 		result.TopMaxDirectionalBps.String(),
 
 		result.SumTotalLSISBps.String(),
+
+		strconv.Itoa(
+			result.LoadedPositionCount,
+		),
+
+		strconv.Itoa(
+			result.PositionCount,
+		),
+
+		strconv.FormatInt(
+			result.PositionCoverageTargetBps,
+			10,
+		),
+
+		result.
+			PositionCoverageAchievedBps.
+			String(),
 	}
 }

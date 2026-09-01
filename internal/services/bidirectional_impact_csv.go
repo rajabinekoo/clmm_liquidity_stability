@@ -102,6 +102,11 @@ func bidirectionalImpactCSVHeader(
 		"one_for_zero_lsis_bps",
 		"total_lsis_bps",
 		"max_directional_lsis_bps",
+
+		"loaded_position_count",
+		"selected_position_count",
+		"position_coverage_target_bps",
+		"position_coverage_achieved_bps",
 	}
 
 	for _, threshold := range thresholds {
@@ -160,6 +165,30 @@ func bidirectionalImpactCSVRow(
 		impact.OneForZeroLSISBps.String(),
 		impact.TotalLSISBps.String(),
 		impact.MaxDirectionalLSISBps.String(),
+
+		strconv.Itoa(
+			report.
+				ZeroForOneReport.
+				LoadedPositionCount,
+		),
+
+		strconv.Itoa(
+			report.
+				ZeroForOneReport.
+				SelectedPositionCount,
+		),
+
+		strconv.FormatInt(
+			report.
+				ZeroForOneReport.
+				PositionCoverageTargetBps,
+			10,
+		),
+
+		report.
+			ZeroForOneReport.
+			PositionCoverageAchievedBps.
+			String(),
 	}
 
 	for _, threshold := range thresholds {

@@ -270,7 +270,11 @@ func (r *PoolStateRepository) LoadActivePositionsAt(
 		  AND tick_upper > $3
 		GROUP BY owner, tick_lower, tick_upper
 		HAVING SUM(liquidity_delta) > 0
-		ORDER BY SUM(liquidity_delta) DESC
+		ORDER BY
+    		SUM(liquidity_delta) DESC,
+    		COALESCE(NULLIF(owner, ''), 'unknown') ASC,
+    		tick_lower ASC,
+    		tick_upper ASC
 		LIMIT $4
 	`, poolAddress, blockNumber, currentTick, limit)
 	if err != nil {

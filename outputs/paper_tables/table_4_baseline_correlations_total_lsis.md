@@ -1,7 +1,0 @@
-| Pool | active_liquidity_share Pearson | active_liquidity_share Spearman | range_width Pearson | range_width Spearman | distance_to_nearest_edge Pearson | distance_to_nearest_edge Spearman | normalized_liquidity_density Pearson | normalized_liquidity_density Spearman |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| USDC/USDT 0.01% | 0.438 | 0.262 | 0.207 | 0.286 | 0.205 | 0.034 | 0.469 | 0.028 |
-| USDC/WETH 0.05% | 0.943 | 0.934 | 0.055 | 0.321 | 0.056 | 0.396 | 0.670 | 0.378 |
-| USDC/WETH 0.30% | 0.963 | 0.541 | -0.210 | 0.112 | -0.056 | 0.435 | 0.711 | 0.219 |
-| WBTC/WETH 0.30% | 0.188 | 0.378 | 0.503 | 0.257 | 0.504 | 0.540 | -0.057 | 0.016 |
-| WETH/USDT 0.05% | 0.894 | 0.942 | -0.016 | 0.108 | -0.014 | 0.120 | 0.851 | 0.628 |

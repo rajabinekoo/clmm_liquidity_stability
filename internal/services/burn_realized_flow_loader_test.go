@@ -1,0 +1,717 @@
+package services
+
+import (
+	"context"
+	"fmt"
+	"math/big"
+	"strings"
+	"testing"
+
+	"github.com/rajabinekoo/clmm-liquidity-stability/internal/domain"
+)
+
+type burnFlowFetchCall struct {
+	FromBlock uint64
+	ToBlock   uint64
+	AfterID   string
+	Limit     int
+}
+
+type fakeBurnRealizedFlowProvider struct {
+	metadataCalls int
+	calls         []burnFlowFetchCall
+
+	pages map[string][]domain.SwapEvent
+}
+
+func (
+	f *fakeBurnRealizedFlowProvider,
+) PoolMetadata(
+	_ context.Context,
+	poolAddress string,
+) (domain.Pool, error) {
+	f.metadataCalls++
+
+	return domain.Pool{
+		Address: poolAddress,
+
+		Token0Decimals: 6,
+
+		Token1Decimals: 18,
+	}, nil
+}
+
+func (
+	f *fakeBurnRealizedFlowProvider,
+) FetchSwapsPage(
+	_ context.Context,
+	poolAddress string,
+	fromBlock uint64,
+	toBlock uint64,
+	afterID string,
+	limit int,
+	_ int,
+	_ int,
+) ([]domain.SwapEvent, error) {
+	f.calls =
+		append(
+			f.calls,
+			burnFlowFetchCall{
+				FromBlock: fromBlock,
+
+				ToBlock: toBlock,
+
+				AfterID: afterID,
+
+				Limit: limit,
+			},
+		)
+
+	key :=
+		burnFlowTestPageKey(
+			fromBlock,
+			toBlock,
+			afterID,
+		)
+
+	values :=
+		f.pages[key]
+
+	result := make(
+		[]domain.SwapEvent,
+		len(values),
+	)
+
+	copy(
+		result,
+		values,
+	)
+
+	return result, nil
+}
+
+func TestFetchBurnRealizedFlowSwapsUsesBlockChunks(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const poolAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	provider :=
+		&fakeBurnRealizedFlowProvider{
+			pages: map[string][]domain.SwapEvent{
+				burnFlowTestPageKey(
+					100,
+					599,
+					"",
+				): {
+					burnFlowTestSwap(
+						poolAddress,
+						110,
+						1,
+						"swap-1",
+					),
+				},
+
+				burnFlowTestPageKey(
+					600,
+					1_099,
+					"",
+				): {
+					burnFlowTestSwap(
+						poolAddress,
+						700,
+						1,
+						"swap-2",
+					),
+				},
+
+				burnFlowTestPageKey(
+					1_100,
+					1_299,
+					"",
+				): {
+					burnFlowTestSwap(
+						poolAddress,
+						1_200,
+						1,
+						"swap-3",
+					),
+				},
+			},
+		}
+
+	swaps, err :=
+		fetchBurnRealizedFlowSwaps(
+			context.Background(),
+			provider,
+			domain.Pool{
+				Address: poolAddress,
+
+				Token0Decimals: 6,
+
+				Token1Decimals: 18,
+			},
+			domain.EventCursor{
+				BlockNumber: 100,
+
+				LogIndex: 5,
+			},
+			1_299,
+			1_000,
+		)
+	if err != nil {
+		t.Fatalf(
+			"fetchBurnRealizedFlowSwaps() error = %v",
+			err,
+		)
+	}
+
+	if len(provider.calls) != 3 {
+		t.Fatalf(
+			"provider call count = %d, want 3",
+			len(provider.calls),
+		)
+	}
+
+	expectedRanges :=
+		[][2]uint64{
+			{100, 599},
+			{600, 1_099},
+			{1_100, 1_299},
+		}
+
+	for index, expected := range expectedRanges {
+		call :=
+			provider.calls[index]
+
+		if call.FromBlock !=
+			expected[0] ||
+			call.ToBlock !=
+				expected[1] {
+			t.Fatalf(
+				"call %d range = [%d,%d], want [%d,%d]",
+				index,
+				call.FromBlock,
+				call.ToBlock,
+				expected[0],
+				expected[1],
+			)
+		}
+
+		if call.AfterID != "" {
+			t.Fatalf(
+				"call %d after ID = %q, want empty because each chunk has independent pagination",
+				index,
+				call.AfterID,
+			)
+		}
+	}
+
+	if len(swaps) != 3 {
+		t.Fatalf(
+			"swap count = %d, want 3",
+			len(swaps),
+		)
+	}
+
+	for index, expectedID := range []string{
+		"swap-1",
+		"swap-2",
+		"swap-3",
+	} {
+		if swaps[index].ID !=
+			expectedID {
+			t.Fatalf(
+				"swap %d ID = %q, want %q",
+				index,
+				swaps[index].ID,
+				expectedID,
+			)
+		}
+	}
+}
+
+func TestFetchBurnRealizedFlowSwapsExcludesEventsBeforeBurnInSameBlock(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const poolAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	provider :=
+		&fakeBurnRealizedFlowProvider{
+			pages: map[string][]domain.SwapEvent{
+				burnFlowTestPageKey(
+					100,
+					100,
+					"",
+				): {
+					burnFlowTestSwap(
+						poolAddress,
+						100,
+						4,
+						"before-burn",
+					),
+
+					burnFlowTestSwap(
+						poolAddress,
+						100,
+						6,
+						"after-burn",
+					),
+				},
+			},
+		}
+
+	swaps, err :=
+		fetchBurnRealizedFlowSwaps(
+			context.Background(),
+			provider,
+			domain.Pool{
+				Address: poolAddress,
+
+				Token0Decimals: 6,
+
+				Token1Decimals: 18,
+			},
+			domain.EventCursor{
+				BlockNumber: 100,
+
+				LogIndex: 5,
+			},
+			100,
+			1_000,
+		)
+	if err != nil {
+		t.Fatalf(
+			"fetchBurnRealizedFlowSwaps() error = %v",
+			err,
+		)
+	}
+
+	if len(swaps) != 1 {
+		t.Fatalf(
+			"swap count = %d, want 1",
+			len(swaps),
+		)
+	}
+
+	if swaps[0].ID !=
+		"after-burn" {
+		t.Fatalf(
+			"swap ID = %q, want after-burn",
+			swaps[0].ID,
+		)
+	}
+}
+
+func burnFlowTestPageKey(
+	fromBlock uint64,
+	toBlock uint64,
+	afterID string,
+) string {
+	return fmt.Sprintf(
+		"%d:%d:%s",
+		fromBlock,
+		toBlock,
+		afterID,
+	)
+}
+
+func burnFlowTestSwap(
+	poolAddress string,
+	blockNumber uint64,
+	logIndex int,
+	id string,
+) domain.SwapEvent {
+	return domain.SwapEvent{
+		ID: id,
+
+		TxHash: "0x" + id,
+
+		PoolAddress: poolAddress,
+
+		BlockNumber: blockNumber,
+
+		LogIndex: logIndex,
+
+		Timestamp: 1,
+
+		Amount0Raw: big.NewInt(100),
+
+		Amount1Raw: big.NewInt(-200),
+
+		SqrtPriceX96After: big.NewInt(1_000),
+
+		TickAfter: 100,
+	}
+}
+
+func TestBurnRealizedFlowChunkEnd(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	tests :=
+		[]struct {
+			name string
+
+			fromBlock    uint64
+			throughBlock uint64
+			chunkSize    uint64
+
+			want uint64
+		}{
+			{
+				name: "full chunk",
+
+				fromBlock: 100,
+
+				throughBlock: 1_000,
+
+				chunkSize: 500,
+
+				want: 599,
+			},
+			{
+				name: "partial final chunk",
+
+				fromBlock: 600,
+
+				throughBlock: 900,
+
+				chunkSize: 500,
+
+				want: 900,
+			},
+			{
+				name: "single block",
+
+				fromBlock: 100,
+
+				throughBlock: 100,
+
+				chunkSize: 500,
+
+				want: 100,
+			},
+		}
+
+	for _, test := range tests {
+		test :=
+			test
+
+		t.Run(
+			test.name,
+			func(t *testing.T) {
+				t.Parallel()
+
+				got :=
+					burnRealizedFlowChunkEnd(
+						test.fromBlock,
+						test.throughBlock,
+						test.chunkSize,
+					)
+
+				if got != test.want {
+					t.Fatalf(
+						"burnRealizedFlowChunkEnd() = %d, want %d",
+						got,
+						test.want,
+					)
+				}
+			},
+		)
+	}
+}
+
+func TestFetchBurnRealizedFlowSwapsCollapsesEquivalentDuplicateCursor(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const poolAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	first := burnFlowTestSwap(
+		poolAddress,
+		120,
+		7,
+		"duplicate-a",
+	)
+
+	duplicate := first
+	duplicate.ID = "duplicate-b"
+
+	provider :=
+		&fakeBurnRealizedFlowProvider{
+			pages: map[string][]domain.SwapEvent{
+				burnFlowTestPageKey(
+					100,
+					200,
+					"",
+				): {
+					first,
+					duplicate,
+					burnFlowTestSwap(
+						poolAddress,
+						130,
+						1,
+						"next-swap",
+					),
+				},
+			},
+		}
+
+	swaps, err :=
+		fetchBurnRealizedFlowSwaps(
+			context.Background(),
+			provider,
+			domain.Pool{
+				Address: poolAddress,
+
+				Token0Decimals: 6,
+
+				Token1Decimals: 18,
+			},
+			domain.EventCursor{
+				BlockNumber: 100,
+
+				LogIndex: 5,
+			},
+			200,
+			1_000,
+		)
+	if err != nil {
+		t.Fatalf(
+			"fetchBurnRealizedFlowSwaps() error = %v",
+			err,
+		)
+	}
+
+	if len(swaps) != 2 {
+		t.Fatalf(
+			"swap count = %d, want 2 after duplicate collapse",
+			len(swaps),
+		)
+	}
+
+	if swaps[0].ID != "duplicate-a" {
+		t.Fatalf(
+			"canonical duplicate ID = %q, want duplicate-a",
+			swaps[0].ID,
+		)
+	}
+
+	if swaps[1].ID != "next-swap" {
+		t.Fatalf(
+			"second swap ID = %q, want next-swap",
+			swaps[1].ID,
+		)
+	}
+}
+
+func TestFetchBurnRealizedFlowSwapsRejectsConflictingDuplicateCursor(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const poolAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	first := burnFlowTestSwap(
+		poolAddress,
+		120,
+		7,
+		"duplicate-a",
+	)
+
+	conflicting := first
+	conflicting.ID = "duplicate-b"
+	conflicting.Amount1Raw = big.NewInt(-201)
+
+	provider :=
+		&fakeBurnRealizedFlowProvider{
+			pages: map[string][]domain.SwapEvent{
+				burnFlowTestPageKey(
+					100,
+					200,
+					"",
+				): {
+					first,
+					conflicting,
+				},
+			},
+		}
+
+	_, err :=
+		fetchBurnRealizedFlowSwaps(
+			context.Background(),
+			provider,
+			domain.Pool{
+				Address: poolAddress,
+
+				Token0Decimals: 6,
+
+				Token1Decimals: 18,
+			},
+			domain.EventCursor{
+				BlockNumber: 100,
+
+				LogIndex: 5,
+			},
+			200,
+			1_000,
+		)
+
+	if err == nil {
+		t.Fatal(
+			"fetchBurnRealizedFlowSwaps() error = nil, want conflicting duplicate error",
+		)
+	}
+
+	if !strings.Contains(
+		err.Error(),
+		"conflicting swaps share cursor 120:7",
+	) {
+		t.Fatalf(
+			"fetchBurnRealizedFlowSwaps() error = %q, want conflicting cursor detail",
+			err,
+		)
+	}
+}
+
+type fakeBurnRealizedFlowOutcomeProvider struct {
+	*fakeBurnRealizedFlowProvider
+}
+
+func (f *fakeBurnRealizedFlowOutcomeProvider) IndexedHead(
+	_ context.Context,
+) (domain.IndexedHead, error) {
+	return domain.IndexedHead{BlockNumber: 1_000}, nil
+}
+
+func (f *fakeBurnRealizedFlowOutcomeProvider) PoolSnapshotAt(
+	_ context.Context,
+	_ string,
+	_ uint64,
+) (domain.PoolSnapshot, error) {
+	return domain.PoolSnapshot{}, nil
+}
+
+type fakeBurnRealizedFlowOutcomeRepository struct {
+	liquidityCalls int
+	swapCalls      int
+	changes        []domain.LiquidityChange
+	swaps          []domain.SwapEvent
+}
+
+func (f *fakeBurnRealizedFlowOutcomeRepository) LoadReconstructionInputFromSnapshot(
+	_ context.Context,
+	_ domain.PoolSnapshot,
+) (domain.ReconstructionInput, error) {
+	return domain.ReconstructionInput{}, nil
+}
+
+func (f *fakeBurnRealizedFlowOutcomeRepository) LoadLiquidityChangesAfterCursorThroughBlock(
+	_ context.Context,
+	_ string,
+	_ domain.EventCursor,
+	_ uint64,
+) ([]domain.LiquidityChange, error) {
+	f.liquidityCalls++
+	return cloneBurnFlowLiquidityChanges(f.changes), nil
+}
+
+func (f *fakeBurnRealizedFlowOutcomeRepository) LoadSwapsAfterCursorThroughBlock(
+	_ context.Context,
+	_ string,
+	_ domain.EventCursor,
+	_ uint64,
+) ([]domain.SwapEvent, error) {
+	f.swapCalls++
+	return cloneBurnFlowSwaps(f.swaps), nil
+}
+
+func TestLoadBurnRealizedFlowEventsReusesAndReleasesCache(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const poolAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	flowProvider := &fakeBurnRealizedFlowProvider{
+		pages: map[string][]domain.SwapEvent{},
+	}
+	provider := &fakeBurnRealizedFlowOutcomeProvider{
+		fakeBurnRealizedFlowProvider: flowProvider,
+	}
+	repository := &fakeBurnRealizedFlowOutcomeRepository{
+		swaps: []domain.SwapEvent{
+			burnFlowTestSwap(poolAddress, 110, 1, "swap-1"),
+		},
+	}
+	service := NewBurnRealizedOutcomeService(
+		provider,
+		repository,
+		&PriceImpactCurveService{},
+	)
+	burn := domain.BurnCandidate{
+		PoolAddress: poolAddress,
+		Cursor: domain.EventCursor{
+			BlockNumber: 100,
+			LogIndex:    5,
+		},
+	}
+
+	for index := 0; index < 2; index++ {
+		result, err := service.loadBurnRealizedFlowEvents(
+			context.Background(),
+			burn,
+			150,
+			true,
+		)
+		if err != nil {
+			t.Fatalf("loadBurnRealizedFlowEvents() call %d error = %v", index+1, err)
+		}
+		if len(result.Swaps) != 1 {
+			t.Fatalf("call %d swap count = %d, want 1", index+1, len(result.Swaps))
+		}
+	}
+
+	if flowProvider.metadataCalls != 0 {
+		t.Fatalf("metadata calls = %d, want 0 for local swap loading", flowProvider.metadataCalls)
+	}
+	if len(flowProvider.calls) != 0 {
+		t.Fatalf("remote swap page calls = %d, want 0", len(flowProvider.calls))
+	}
+	if repository.liquidityCalls != 1 {
+		t.Fatalf("liquidity calls = %d, want 1", repository.liquidityCalls)
+	}
+	if repository.swapCalls != 1 {
+		t.Fatalf("local swap calls = %d, want 1", repository.swapCalls)
+	}
+
+	service.releaseBurnRealizedFlowEvents(burn, 150)
+
+	if _, err := service.loadBurnRealizedFlowEvents(
+		context.Background(),
+		burn,
+		150,
+		true,
+	); err != nil {
+		t.Fatalf("load after release error = %v", err)
+	}
+
+	if flowProvider.metadataCalls != 0 {
+		t.Fatalf("metadata calls after release = %d, want 0", flowProvider.metadataCalls)
+	}
+	if len(flowProvider.calls) != 0 {
+		t.Fatalf("remote swap page calls after release = %d, want 0", len(flowProvider.calls))
+	}
+	if repository.liquidityCalls != 2 {
+		t.Fatalf("liquidity calls after release = %d, want 2", repository.liquidityCalls)
+	}
+	if repository.swapCalls != 2 {
+		t.Fatalf("local swap calls after release = %d, want 2", repository.swapCalls)
+	}
+}

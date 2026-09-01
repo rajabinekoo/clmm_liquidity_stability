@@ -23,7 +23,8 @@ COMPOSE        ?= docker compose -f $(COMPOSE_FILE)
 
 # App commands
 INDEXER_CMD := go run ./cmd/indexer/main.go
-ANALYZER_CMD := go run ./cmd/analyzer/main.go
+ANALYZER_CMD := go run ./cmd/analyzer
+CONTROL_FREEZE_CMD := go run ./cmd/controlfreeze
 
 .PHONY: infra-up
 infra-up:
@@ -56,6 +57,31 @@ index-usdc-usdt-001:
 .PHONY: index-pools
 index-pools: index-usdc-weth-005 index-usdc-weth-030 index-wbtc-weth-030 index-weth-usdt-005 index-usdc-usdt-001
 
+# One-shot local Swap backfills. LP actions/snapshots are left untouched; the
+# command exits as soon as the PostgreSQL Swap checkpoint reaches the safe head.
+.PHONY: backfill-swaps-usdc-weth-005
+backfill-swaps-usdc-weth-005:
+	@ENV_FILE=.env.usdc_weth_005 INDEXER_ONCE=true INDEX_LP_ACTIONS=false INDEX_SWAPS=true $(INDEXER_CMD)
+
+.PHONY: backfill-swaps-usdc-weth-030
+backfill-swaps-usdc-weth-030:
+	@ENV_FILE=.env.usdc_weth_030 INDEXER_ONCE=true INDEX_LP_ACTIONS=false INDEX_SWAPS=true $(INDEXER_CMD)
+
+.PHONY: backfill-swaps-wbtc-weth-030
+backfill-swaps-wbtc-weth-030:
+	@ENV_FILE=.env.wbtc_weth_030 INDEXER_ONCE=true INDEX_LP_ACTIONS=false INDEX_SWAPS=true $(INDEXER_CMD)
+
+.PHONY: backfill-swaps-weth-usdt-005
+backfill-swaps-weth-usdt-005:
+	@ENV_FILE=.env.weth_usdt_005 INDEXER_ONCE=true INDEX_LP_ACTIONS=false INDEX_SWAPS=true $(INDEXER_CMD)
+
+.PHONY: backfill-swaps-usdc-usdt-001
+backfill-swaps-usdc-usdt-001:
+	@ENV_FILE=.env.usdc_usdt_001 INDEXER_ONCE=true INDEX_LP_ACTIONS=false INDEX_SWAPS=true $(INDEXER_CMD)
+
+.PHONY: backfill-swaps
+backfill-swaps: backfill-swaps-usdc-weth-005 backfill-swaps-usdc-weth-030 backfill-swaps-wbtc-weth-030 backfill-swaps-weth-usdt-005 backfill-swaps-usdc-usdt-001
+
 .PHONY: analyze-usdc-weth-005
 analyze-usdc-weth-005:
 	@ENV_FILE=.env.usdc_weth_005 $(ANALYZER_CMD)
@@ -78,6 +104,30 @@ analyze-usdc-usdt-001:
 
 .PHONY: analyze-pools
 analyze-pools: analyze-usdc-weth-005 analyze-usdc-weth-030 analyze-wbtc-weth-030 analyze-weth-usdt-005 analyze-usdc-usdt-001
+
+.PHONY: freeze-controls-usdc-weth-005
+freeze-controls-usdc-weth-005:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/usdc_weth_005
+
+.PHONY: freeze-controls-usdc-weth-030
+freeze-controls-usdc-weth-030:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/usdc_weth_030
+
+.PHONY: freeze-controls-wbtc-weth-030
+freeze-controls-wbtc-weth-030:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/wbtc_weth_030
+
+.PHONY: freeze-controls-weth-usdt-005
+freeze-controls-weth-usdt-005:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/weth_usdt_005
+
+.PHONY: freeze-controls-usdc-usdt-001
+freeze-controls-usdc-usdt-001:
+	@$(CONTROL_FREEZE_CMD) -input-dir outputs/usdc_usdt_001
+
+.PHONY: freeze-controls
+freeze-controls: freeze-controls-usdc-weth-005 freeze-controls-usdc-weth-030 freeze-controls-wbtc-weth-030 freeze-controls-weth-usdt-005 freeze-controls-usdc-usdt-001
+
 
 .PHONY: research-pipeline
 research-pipeline: index-pools analyze-pools
@@ -102,3 +152,11 @@ goose-create:
 .PHONY: goose-status
 goose-status:
 	goose postgres "$(DB_CONNECTION)" -dir $(MIGRATION_DIR) status
+# Chapter 4 thesis/paper figures generated from frozen analyzer outputs.
+PYTHON ?= python3
+CHAPTER4_OUTPUTS_DIR ?= outputs
+CHAPTER4_ARTIFACT_DIR ?= artifacts/chapter4
+
+.PHONY: chapter4-figures
+chapter4-figures:
+	$(PYTHON) scripts/chapter4/generate.py --outputs-dir $(CHAPTER4_OUTPUTS_DIR) --output-dir $(CHAPTER4_ARTIFACT_DIR)

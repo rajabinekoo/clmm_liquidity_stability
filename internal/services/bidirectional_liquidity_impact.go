@@ -17,7 +17,9 @@ type BidirectionalLiquidityImpactRequest struct {
 	ZeroForOneAmountsIn []*big.Int
 	OneForZeroAmountsIn []*big.Int
 	ThresholdsBps       []decimal.Decimal
+
 	PositionLimit       int
+	PositionCoverageBps int64
 }
 
 type BidirectionalLiquidityImpactReport struct {
@@ -69,11 +71,12 @@ func (s *LiquidityImpactService) AnalyzeBidirectionalActivePositions(
 	zeroForOneReport, err := s.AnalyzeActivePositions(
 		ctx,
 		LiquidityImpactRequest{
-			Pool:          req.Pool,
-			AmountsIn:     req.ZeroForOneAmountsIn,
-			ThresholdsBps: req.ThresholdsBps,
-			ZeroForOne:    true,
-			PositionLimit: req.PositionLimit,
+			Pool:                req.Pool,
+			AmountsIn:           req.ZeroForOneAmountsIn,
+			ThresholdsBps:       req.ThresholdsBps,
+			ZeroForOne:          true,
+			PositionLimit:       req.PositionLimit,
+			PositionCoverageBps: req.PositionCoverageBps,
 		},
 	)
 	if err != nil {
@@ -83,15 +86,26 @@ func (s *LiquidityImpactService) AnalyzeBidirectionalActivePositions(
 	oneForZeroReport, err := s.AnalyzeActivePositions(
 		ctx,
 		LiquidityImpactRequest{
-			Pool:          req.Pool,
-			AmountsIn:     req.OneForZeroAmountsIn,
-			ThresholdsBps: req.ThresholdsBps,
-			ZeroForOne:    false,
-			PositionLimit: req.PositionLimit,
+			Pool:                req.Pool,
+			AmountsIn:           req.OneForZeroAmountsIn,
+			ThresholdsBps:       req.ThresholdsBps,
+			ZeroForOne:          false,
+			PositionLimit:       req.PositionLimit,
+			PositionCoverageBps: req.PositionCoverageBps,
 		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("bidirectional impact: one_for_zero: %w", err)
+	}
+
+	if err := validateBidirectionalPositionSelection(
+		zeroForOneReport,
+		oneForZeroReport,
+	); err != nil {
+		return nil, fmt.Errorf(
+			"bidirectional impact: inconsistent position selection: %w",
+			err,
+		)
 	}
 
 	positions := mergeDirectionalImpacts(
@@ -265,4 +279,109 @@ func cloneDepthDeltas(deltas []DepthDelta) []DepthDelta {
 	copy(result, deltas)
 
 	return result
+}
+
+func validateBidirectionalPositionSelection(
+	zeroForOneReport *LiquidityImpactReport,
+	oneForZeroReport *LiquidityImpactReport,
+) error {
+	if zeroForOneReport == nil ||
+		oneForZeroReport == nil {
+		return fmt.Errorf(
+			"directional report is nil",
+		)
+	}
+
+	if zeroForOneReport.PositionLimit !=
+		oneForZeroReport.PositionLimit {
+		return fmt.Errorf(
+			"position limits differ: zero_for_one=%d one_for_zero=%d",
+			zeroForOneReport.PositionLimit,
+			oneForZeroReport.PositionLimit,
+		)
+	}
+
+	if zeroForOneReport.LoadedPositionCount !=
+		oneForZeroReport.LoadedPositionCount {
+		return fmt.Errorf(
+			"loaded position counts differ: zero_for_one=%d one_for_zero=%d",
+			zeroForOneReport.LoadedPositionCount,
+			oneForZeroReport.LoadedPositionCount,
+		)
+	}
+
+	if zeroForOneReport.SelectedPositionCount !=
+		oneForZeroReport.SelectedPositionCount {
+		return fmt.Errorf(
+			"selected position counts differ: zero_for_one=%d one_for_zero=%d",
+			zeroForOneReport.SelectedPositionCount,
+			oneForZeroReport.SelectedPositionCount,
+		)
+	}
+
+	if zeroForOneReport.PositionCoverageTargetBps !=
+		oneForZeroReport.PositionCoverageTargetBps {
+		return fmt.Errorf(
+			"coverage targets differ: zero_for_one=%d one_for_zero=%d",
+			zeroForOneReport.PositionCoverageTargetBps,
+			oneForZeroReport.PositionCoverageTargetBps,
+		)
+	}
+
+	if !zeroForOneReport.
+		PositionCoverageAchievedBps.
+		Equal(
+			oneForZeroReport.
+				PositionCoverageAchievedBps,
+		) {
+		return fmt.Errorf(
+			"achieved coverage differs: zero_for_one=%s one_for_zero=%s",
+			zeroForOneReport.PositionCoverageAchievedBps,
+			oneForZeroReport.PositionCoverageAchievedBps,
+		)
+	}
+
+	zeroForOneKeys := make(
+		map[string]struct{},
+		len(
+			zeroForOneReport.Positions,
+		),
+	)
+
+	for _, impact := range zeroForOneReport.Positions {
+		key := liquidityPositionKey(
+			impact.Position,
+		)
+
+		zeroForOneKeys[key] =
+			struct{}{}
+	}
+
+	for _, impact := range oneForZeroReport.Positions {
+		key := liquidityPositionKey(
+			impact.Position,
+		)
+
+		if _, exists :=
+			zeroForOneKeys[key]; !exists {
+			return fmt.Errorf(
+				"position %s exists only in one_for_zero selection",
+				key,
+			)
+		}
+
+		delete(
+			zeroForOneKeys,
+			key,
+		)
+	}
+
+	if len(zeroForOneKeys) != 0 {
+		return fmt.Errorf(
+			"%d positions exist only in zero_for_one selection",
+			len(zeroForOneKeys),
+		)
+	}
+
+	return nil
 }
