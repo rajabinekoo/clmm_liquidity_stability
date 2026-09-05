@@ -25,7 +25,7 @@ POOL_ORDER = [
 
 SNAPSHOT_BASELINES = {
     "active_liquidity_share": "Active liquidity share",
-    "position_liquidity": "Position liquidity",
+    # "position_liquidity": "Position liquidity",
     "normalized_liquidity_density": "Normalized liquidity density",
     "range_width": "Range width",
     "distance_to_nearest_edge": "Distance to nearest edge",

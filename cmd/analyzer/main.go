@@ -234,6 +234,19 @@ func run() error {
 		return err
 	}
 
+	if os.Getenv("ANALYZER_MODE") == "snapshot_stress" {
+		return runSnapshotStressAnalysis(
+			ctx,
+			config,
+			provider,
+			poolStateRepository,
+			pool,
+			simulator,
+			curveAmounts,
+			thresholdsBps,
+		)
+	}
+
 	amountGridResolver, err := newAnalyzerAmountGridResolver(config, simulator, curveAmounts)
 	if err != nil {
 		return fmt.Errorf("build analysis amount grid resolver: %w", err)
