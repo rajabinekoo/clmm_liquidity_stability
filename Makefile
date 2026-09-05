@@ -25,6 +25,7 @@ COMPOSE        ?= docker compose -f $(COMPOSE_FILE)
 INDEXER_CMD := go run ./cmd/indexer/main.go
 ANALYZER_CMD := go run ./cmd/analyzer
 CONTROL_FREEZE_CMD := go run ./cmd/controlfreeze
+STRESS_COMPARE_CMD := python3 ./scripts/stress_domain_compare.py
 
 .PHONY: infra-up
 infra-up:
@@ -104,6 +105,48 @@ analyze-usdc-usdt-001:
 
 .PHONY: analyze-pools
 analyze-pools: analyze-usdc-weth-005 analyze-usdc-weth-030 analyze-wbtc-weth-030 analyze-weth-usdt-005 analyze-usdc-usdt-001
+
+# Snapshot-only structural stress study used by the revised paper. The primary
+# D50 domain is rerun alongside D100 and D300 so all three use the same code,
+# snapshot schedule, and position-coverage rules. Burn/No-Burn studies are not
+# rerun in this mode.
+.PHONY: stress-d50
+stress-d50:
+	@ENV_FILE=.env.usdc_weth_005 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d50 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50 $(ANALYZER_CMD)
+	@ENV_FILE=.env.usdc_weth_030 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d50 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50 $(ANALYZER_CMD)
+	@ENV_FILE=.env.wbtc_weth_030 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d50 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50 $(ANALYZER_CMD)
+	@ENV_FILE=.env.weth_usdt_005 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d50 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50 $(ANALYZER_CMD)
+	@ENV_FILE=.env.usdc_usdt_001 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d50 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50 $(ANALYZER_CMD)
+
+.PHONY: stress-d100
+stress-d100:
+	@ENV_FILE=.env.usdc_weth_005 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d100 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100 $(ANALYZER_CMD)
+	@ENV_FILE=.env.usdc_weth_030 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d100 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100 $(ANALYZER_CMD)
+	@ENV_FILE=.env.wbtc_weth_030 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d100 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100 $(ANALYZER_CMD)
+	@ENV_FILE=.env.weth_usdt_005 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d100 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100 $(ANALYZER_CMD)
+	@ENV_FILE=.env.usdc_usdt_001 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d100 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100 $(ANALYZER_CMD)
+
+.PHONY: stress-d300
+stress-d300:
+	@ENV_FILE=.env.usdc_weth_005 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d300 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100,300 $(ANALYZER_CMD)
+	@ENV_FILE=.env.usdc_weth_030 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d300 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100,300 $(ANALYZER_CMD)
+	@ENV_FILE=.env.wbtc_weth_030 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d300 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100,300 $(ANALYZER_CMD)
+	@ENV_FILE=.env.weth_usdt_005 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d300 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100,300 $(ANALYZER_CMD)
+	@ENV_FILE=.env.usdc_usdt_001 ANALYZER_MODE=snapshot_stress OUTPUT_BASE_DIR=stress_outputs/d300 NORMALIZED_TARGET_IMPACT_BPS=1,5,10,25,50,100,300 $(ANALYZER_CMD)
+
+.PHONY: stress-run
+stress-run: stress-d50 stress-d100 stress-d300
+
+.PHONY: stress-clean
+stress-clean:
+	@rm -rf stress_outputs
+
+.PHONY: stress-compare
+stress-compare:
+	@$(STRESS_COMPARE_CMD) --root stress_outputs --out stress_outputs/comparison
+
+.PHONY: stress-study
+stress-study: stress-run stress-compare
 
 .PHONY: freeze-controls-usdc-weth-005
 freeze-controls-usdc-weth-005:

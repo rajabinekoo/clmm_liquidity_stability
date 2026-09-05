@@ -6,3 +6,5 @@ outputs
 analyzer
 indexer
 artifacts
+stage_1_5
+stress_outputs
